@@ -1,0 +1,18 @@
+# Core
+numpy>=1.24
+opencv-python>=4.8
+pandas>=2.0
+pyyaml>=6.0
+
+# Detection
+ultralytics>=8.0        # YOLOv8
+
+# Telemetry (ArduPilot — for GoPro phase)
+pymavlink>=2.4
+
+# Testing
+pytest>=7.4
+
+# Notebooks
+jupyter>=1.0
+matplotlib>=3.7

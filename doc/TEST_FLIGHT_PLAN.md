@@ -96,7 +96,7 @@ Target by end of day: **a recorded test clip runs end-to-end on the laptop and p
 ### 👤 Person B — Geometry integration (critical path)
 1. Add `build_R_from_grav_cog(grav_cam, cog_rad, yaw_offset_rad)` in `src/` that builds camera→world rotation from the gravity vector (tilt) and COG (heading). Keep `localize_full()`'s undistort → ray → ray-ground → GPS stages unchanged.
 2. **Safe fallback first:** if GRAV shows near-nadir tilt (<3°), fall back to the Approach 1 nadir formula. A correct nadir MVP beats a buggy full-rotation path for tomorrow.
-3. Write `pipeline/run_localization.py`: load video → for sampled frames (every Nth, ~5–10 fps is plenty) get YOLO detections + interpolated GPMF → call `localize_full` → collect per-frame (lat,lon,conf) → aggregate (median for v1; confidence-weighted if time). Output `results.json` with one GPS per flag.
+3. Write `pipeline/localization.py`: load video → for sampled frames (every Nth, ~5–10 fps is plenty) get YOLO detections + interpolated GPMF → call `localize_full` → collect per-frame (lat,lon,conf) → aggregate (median for v1; confidence-weighted if time). Output `results.json` with one GPS per flag.
 4. **Run the existing unit-test math first** (the 5 tests in `FINAL_Pipeline_Document.md` Part 7 — nadir center, east offset, yaw rotation, oblique rejection, altitude scaling). These already pass on the core math (verified). Put them in `tests/`. Green tests = trust the geometry, debug only the integration.
 
 ### 👤 Person C — Ground truth + validation harness
@@ -106,7 +106,7 @@ Target by end of day: **a recorded test clip runs end-to-end on the laptop and p
 4. Prepare the **USB submission rehearsal**: required coordinate format, empty FAT32 USB, and time the "land → extract SD → copy → run → export → submit" loop. The 10-minute window is part of the test.
 
 ### Shared, end of day
-- One **integration smoke test**: a real Hero 13 clip → `run_localization.py` → a GPS that's within ~20 m of a surveyed point on the ground. If this passes today, tomorrow is low-risk.
+- One **integration smoke test**: a real Hero 13 clip → `localization.py` → a GPS that's within ~20 m of a surveyed point on the ground. If this passes today, tomorrow is low-risk.
 - Freeze the config. Print the pre-flight checklist (`FINAL_Pipeline_Document.md` Part 9), adapted: tick GPS ON, EIS OFF, altitude source set.
 
 ---
@@ -115,7 +115,7 @@ Target by end of day: **a recorded test clip runs end-to-end on the laptop and p
 
 1. **Pre-flight:** run the Part 9 checklist. Confirm GoPro: Linear, EIS off, Horizon Lock off, GPS on, recording (red light). Note takeoff GPS + clock.
 2. **Fly 75–80 m AGL** (not 100 m) so the flag is ≥28 px and detection is reliable. Straight, level passes over each target; a few seconds per flag at 5–10 usable fps gives 20+ frames for averaging.
-3. **Land → offline run** on the laptop: extract SD → `run_localization.py video.mp4 → results.json` → `validation.py` against surveyed truth. Everything runs locally; no internet, as designed.
+3. **Land → offline run** on the laptop: extract SD → `localization.py video.mp4 → results.json` → `validation.py` against surveyed truth. Everything runs locally; no internet, as designed.
 4. **Record metrics:** mean, median, max error, % < 20 m, and per-flag points. That's your go/no-go evidence for the competition.
 
 **MVP definition of success for tomorrow:** at least one flag localised within 20 m using the offline GoPro-only pipeline. Anything beyond (multiple flags, GRAV tilt correction working, confidence weighting) is upside.

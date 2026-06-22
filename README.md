@@ -1,147 +1,75 @@
-# uav-gps-localization
+# UAV Flag Localization
 
-**ICMTC 2026 — UAVC-9 Fixed-Wing Challenge**  
-AI Team — Eagles, Nile University
+Find the GPS location of flags seen in GoPro aerial video, to within ~20 m, fully
+offline. Built for the ICMTC 2026 UAVC-9 Fixed-Wing Challenge.
 
-Convert a YOLO pixel detection on a UAV video frame into a GPS coordinate (lat, lon) accurate to within 20 m — the threshold for full competition points.
+Only the GoPro Hero 13 video is needed. Its embedded GPMF metadata already holds GPS,
+a gravity vector (camera tilt), and gyro, all on the same clock as the video frames,
+so no separate flight-controller log or time syncing is required.
 
----
+## How it works
 
-## Problem
-
-A fixed-wing UAV flies at 75–100 m AGL and detects flags on the ground with a downward-facing GoPro. For each flag, we must report a GPS coordinate within **20 m** of the real position and submit it on USB within 10 minutes of landing.
-
-**Scoring:**
-
-| GPS error | Points |
-|---|---|
-| < 20 m | 15 |
-| 20–30 m | 12 |
-| 30–60 m | 3–9 |
-| > 60 m | 0 |
-
----
+For each frame with a detected flag: turn the pixel into a viewing ray, rotate it to
+the world using gravity (tilt) and heading, intersect the ground at the known height,
+then convert to GPS. A flag is seen in many frames, so the estimates are clustered and
+averaged into one coordinate.
 
 ## Pipeline
 
 ```
-Video Frame
-    ↓
-[YOLO Detection]  →  bounding box center (u, v)
-    ↓
-[Undistortion]    →  corrected pixel (Brown-Conrady)
-    ↓
-[Camera Ray]      →  normalized ray in camera frame
-    ↓
-[IMU Rotation]    →  ray in NED world frame  (roll, pitch, yaw)
-    ↓
-[Ray-Ground]      →  ground offset (ΔE, ΔN) in metres
-    ↓
-[GPS Conversion]  →  (Δlat, Δlon)
-    ↓
-[Multi-Frame Aggregation]  →  final (lat_flag, lon_flag)
+GoPro .MP4
+   ├─ detect.py        → detections.csv   (frame_time, u, v, conf)
+   └─ gpmf_extract.py  → telemetry.csv    (time_s, lat, lon, alt, grav_x/y/z)
+                              │
+                          sync.py          → synced.csv   (join by time + heading + tilt)
+                              │
+                       localization.py     → results.json (one GPS per flag)
+
+run_pipeline.py runs all four in order; outputs go to artifacts/.
 ```
 
----
+## Files
 
-## Three Approaches
+| File | Input | Output |
+|------|-------|--------|
+| `gpmf_extract.py` | GoPro `.MP4` | `telemetry.csv` (GPS + gravity); uses `gps9_parser.py` for Hero 13 |
+| `detect.py` | video + YOLO weights | `detections.csv` (bbox centre + timestamp per detection) |
+| `sync.py` | detections + telemetry | `synced.csv` (drone position, heading, tilt per detection) |
+| `localization.py` | `synced.csv` | `results.json` (flag GPS coordinates) |
+| `run_pipeline.py` | video | runs stages 1–4, writes everything to `artifacts/` |
+| `calibrate_camera.py` | checkerboard photos | camera intrinsics YAML |
+| `tests/test_geometry.py` | — | geometry unit tests |
 
-| Approach | Description | Expected error |
-|---|---|---|
-| `src/approach1.py` | Baseline — nadir assumption, no IMU | 15–25 m |
-| `src/approach2.py` | **Recommended** — full IMU rotation + undistortion | 4–8 m |
-| `src/approach3.py` | Advanced — DBSCAN clustering + SAHI + GPS COG | 2–5 m |
-
----
-
-## Repository Structure
-
-```
-localization_uav/
-├── doc/                          # Full engineering docs
-│   ├── FINAL_Pipeline_Document.md
-│   ├── UAV_GPS_Localization_Engineering_Report.md
-│   └── MOBILE_TEST_IMPLEMENTATION_PLAN.md
-├── notebook/
-│   └── UAV_GPS_Localization.ipynb   # Interactive demo + unit tests
-├── pipeline/                     # Integration layer (in progress)
-│   ├── calibrate_camera.py
-│   ├── mobile_telemetry_parser.py
-│   ├── video_sync.py
-│   ├── detector.py
-│   └── run_localization.py
-├── src/                          # Core localization approaches
-│   ├── approach1.py
-│   ├── approach2.py
-│   └── approach3.py
-├── tests/                        # Unit + integration tests
-├── configs/                      # Camera parameter YAMLs
-└── data/                         # Flight recordings (gitignored)
-```
-
----
-
-## Quick Start
-
-### 1. Install dependencies
+## Install & run
 
 ```bash
 pip install -r requirements.txt
-```
 
-### 2. Calibrate camera
-
-```bash
-python pipeline/calibrate_camera.py \
-    --images data/checkerboard/ \
-    --out configs/camera_params_phone.yaml
-```
-
-### 3. Run localization on a recording
-
-```bash
-python pipeline/run_localization.py \
-    --video      data/test_flight/recording.mp4 \
-    --telemetry  data/test_flight/sensors.csv \
-    --camera     configs/camera_params_phone.yaml \
-    --start-ms   1716640000000 \
-    --out        results.json
-```
-
-### 4. Run tests
-
-```bash
+python pipeline/run_pipeline.py --video data/ground_truth/G1.MP4 --alt 80
 pytest tests/ -v
 ```
 
----
+Main options: `--alt` = camera height above the target (AGL on a flight, not MSL);
+`--camera` = calibration YAML; `--heading` = fixed heading for stationary clips.
 
-## Mobile Phone Testing
+## Remaining work
 
-The GoPro can be substituted with any smartphone for ground testing:
+- Run `calibrate_camera.py` on the Hero 13; until then a placeholder lens is used and
+  distances are not accurate.
+- Provide a real above-ground altitude (the GoPro GPS altitude is MSL, not AGL).
+- Add validation against surveyed points (error, % within 20 m).
+- Add the USB submission export format.
 
-1. Install **Sensor Logger** (Android) or **SensorLog** (iOS)
-2. Disable all video stabilization (EIS, optical stabilization)
-3. Place a red/orange 40×40 cm target on the ground
-4. Hold phone at ~1.5 m height pointing straight down, walk slowly over target
-5. Export video + CSV — run the pipeline
+## Known weaknesses
 
-See [`doc/MOBILE_TEST_IMPLEMENTATION_PLAN.md`](doc/MOBILE_TEST_IMPLEMENTATION_PLAN.md) for full instructions.
-
----
-
-## Team
-
-| Member | Role |
-|---|---|
-| A | Camera calibration + telemetry parser |
-| B | Video sync + end-to-end runner |
-| C | Flag detection + validation |
-
----
-
-## References
-
-- Barber & Redding (2006) — UAV camera attitude rotation convention
-- OpenCV Brown-Conrady distortion model
-- ICMTC 2026 Official Rules, Section 6.2.1
+- **Calibration YAML mismatch:** `calibrate_camera.py` writes `camera_matrix`/
+  `dist_coeffs`, but `localization.py` expects `K`/`dist` — reconcile before `--camera`
+  works.
+- **Heading** is the weakest input: needs a known azimuth (or course-over-ground on a
+  moving flight); errors rotate the result.
+- **Needs a GPS fix:** no satellite lock means invalid coordinates (use `--fake-gps`
+  to test geometry).
+- **Altitude-sensitive:** error in `--alt` maps almost directly into ground error.
+- **Small targets:** a flag is ~20–40 px at altitude; detection must be verified there.
+- **Flat-ground assumption:** terrain relief is not modelled.
+```

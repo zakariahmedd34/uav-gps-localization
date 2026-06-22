@@ -5,14 +5,14 @@ pandas>=2.0
 pyyaml>=6.0
 
 # Detection
-ultralytics>=8.0        # YOLOv8
+ultralytics>=8.0          # YOLO (v8 / v11)
 
-# Telemetry (ArduPilot — for GoPro phase)
-pymavlink>=2.4
+# GoPro GPMF telemetry (Hero 13: GPS9 + GRAV, parsed locally from the .MP4)
+telemetrik
 
 # Testing
 pytest>=7.4
 
-# Notebooks
-jupyter>=1.0
-matplotlib>=3.7
+# Optional — notebooks / plotting
+# jupyter>=1.0
+# matplotlib>=3.7

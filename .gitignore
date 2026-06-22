@@ -40,11 +40,21 @@ desktop.ini
 
 # Large binary / media files (do not commit flight data)
 *.mp4
+*.MP4
 *.avi
 *.mov
+*.MOV
+*.lrv
+*.LRV
+*.thm
+*.THM
 *.bin
 *.tlog
 *.bag
+
+# GoPro flight/ground-truth data exports (keep the folder, not the big files)
+data/ground_truth/*.csv
+data/ground_truth/*.json
 
 # YOLO model weights (large)
 *.pt
@@ -60,3 +70,7 @@ data/test_flight/
 *.env
 .env
 configs/secrets.yaml
+
+# Pipeline intermediate + output files
+artifacts/*
+!artifacts/.gitkeep

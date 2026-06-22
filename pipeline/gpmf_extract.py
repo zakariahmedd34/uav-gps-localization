@@ -90,7 +90,13 @@ def _get_gpmd_samples_and_timebase(f, size):
 # ----------------------------------------------------------------------
 def extract_video_to_csv(video_path, output_csv="telemetry.csv", check=True):
     if check:
-        ffprobe_check(video_path)
+        # ffprobe is only an optional sanity print; telemetrik reads the GPMF
+        # straight from the MP4. Don't let a missing ffprobe kill the run.
+        try:
+            ffprobe_check(video_path)
+        except FileNotFoundError:
+            print("[ffprobe] not found on PATH — skipping sanity check "
+                  "(install ffmpeg for it). Continuing with telemetrik.")
 
     print("[1] Parsing GPMF via telemetrik...")
 

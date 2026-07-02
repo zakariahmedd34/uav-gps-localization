@@ -34,31 +34,80 @@ import argparse
 import numpy as np
 import pandas as pd
 
+from logger import logging
+from exception import CustomException
+
 try:
     import cv2
 except ImportError:
+    logging.error("opencv-python is required (pip install opencv-python)")
     sys.exit("ERROR: opencv-python is required (pip install opencv-python).")
 
 EARTH = 111320.0
 
 
 def load_camera(path, default_cx, default_cy):
-    """Return (K, dist). Falls back to loud placeholder if no yaml given."""
+    """Return (K, dist, image_size).
+
+    Accepts BOTH calibration-yaml schemas so the file calibrate_camera.py
+    writes works directly:
+      (a) calibrate_camera.py schema:
+            camera_matrix: {fx, fy, cx, cy}
+            dist_coeffs:   [k1, k2, p1, p2, k3, ...]
+            image_width / image_height
+      (b) legacy/manual schema:
+            K:    [[fx,0,cx],[0,fy,cy],[0,0,1]]
+            dist: [k1, k2, p1, p2, k3, ...]
+    Falls back to a loud placeholder when no yaml is given.
+
+    image_size is (width, height) or None — used only to warn if the
+    detections were run at a different resolution than the calibration.
+    """
     if path:
         import yaml
         with open(path) as f:
-            c = yaml.safe_load(f)
-        K = np.array(c["K"], dtype=np.float64)
-        dist = np.array(c["dist"], dtype=np.float64).ravel()
-        print(f"Camera: loaded {path}  fx={K[0,0]:.1f} cx={K[0,2]:.1f} cy={K[1,2]:.1f}")
-        return K, dist
+            c = yaml.safe_load(f) or {}
+
+        image_size = None
+        if "image_width" in c and "image_height" in c:
+            image_size = (int(c["image_width"]), int(c["image_height"]))
+
+        if "camera_matrix" in c:                      # schema (a)
+            cm = c["camera_matrix"]
+            fx, fy = float(cm["fx"]), float(cm["fy"])
+            cx, cy = float(cm["cx"]), float(cm["cy"])
+            K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float64)
+            dist = np.array(c.get("dist_coeffs", []), dtype=np.float64).ravel()
+        elif "K" in c:                                # schema (b)
+            K = np.array(c["K"], dtype=np.float64)
+            dist = np.array(c.get("dist", c.get("dist_coeffs", [])),
+                            dtype=np.float64).ravel()
+        else:
+            logging.error("calibration yaml '%s' has neither 'camera_matrix' nor 'K'", path)
+            sys.exit(
+                f"ERROR: calibration yaml '{path}' has neither 'camera_matrix' "
+                "(fx/fy/cx/cy) nor 'K'. Re-run calibrate_camera.py or fix the file."
+            )
+
+        if dist.size == 0:
+            logging.warning("no distortion coeffs in yaml; assuming zero "
+                            "(fine only if you flew the Linear lens)")
+            dist = np.zeros(5)
+
+        rms = c.get("rms_reprojection_error_px")
+        rms_str = f" rms={rms:.3f}px" if isinstance(rms, (int, float)) else ""
+        size_str = f" @ {image_size[0]}x{image_size[1]}" if image_size else ""
+        logging.info("Camera: loaded %s fx=%.1f fy=%.1f cx=%.1f cy=%.1f%s%s",
+                     path, K[0, 0], K[1, 1], K[0, 2], K[1, 2], size_str, rms_str)
+        return K, dist, image_size
+
     # PLACEHOLDER — replace with real calibration before trusting metres
     fx = fy = 1500.0
     K = np.array([[fx, 0, default_cx], [0, fy, default_cy], [0, 0, 1]], dtype=np.float64)
     dist = np.zeros(5)
-    print("Camera: *** PLACEHOLDER intrinsics (fx=1500, dist=0) — plumbing only, "
-          "NOT accurate. Calibrate the Hero 13 and pass --camera. ***")
-    return K, dist
+    logging.warning("*** PLACEHOLDER intrinsics (fx=1500, dist=0) — plumbing only, "
+                    "NOT accurate. Calibrate the Hero 13 and pass --camera. ***")
+    return K, dist, None
 
 
 def R_grav_heading(grav, heading_deg):
@@ -122,11 +171,20 @@ def main():
     ap.add_argument("--cx", type=float, default=1352.0, help="placeholder cx if no yaml")
     ap.add_argument("--cy", type=float, default=760.0, help="placeholder cy if no yaml")
     args = ap.parse_args()
+    logging.info("localize: START synced=%s alt=%s camera=%s", args.synced, args.alt, args.camera)
 
     d = pd.read_csv(args.synced)
-    K, dist = load_camera(args.camera, args.cx, args.cy)
+    K, dist, image_size = load_camera(args.camera, args.cx, args.cy)
     h = args.alt
-    print(f"Height above flag h = {h} m | {len(d)} detections")
+    logging.info("Height above flag h = %s m | %d detections", h, len(d))
+
+    # Sanity: intrinsics are tied to the pixel resolution. If detections clearly
+    # exceed the calibration image size, K is being used at the wrong scale.
+    if image_size and len(d):
+        if d.u.max() > image_size[0] * 1.02 or d.v.max() > image_size[1] * 1.02:
+            logging.warning("detection pixels reach (%.0f,%.0f) but calibration is %dx%d. "
+                            "Re-calibrate at the SAME resolution/lens, or metres will be off.",
+                            d.u.max(), d.v.max(), image_size[0], image_size[1])
 
     lats, lons, confs, ENs = [], [], [], []
     rejected = 0
@@ -159,8 +217,9 @@ def main():
         ENs.append([dE, dN])
 
     if not lats:
+        logging.error("no valid localizations (all rays rejected). Check tilt/heading/h")
         sys.exit("No valid localizations (all rays rejected). Check tilt/heading/h.")
-    print(f"Localized {len(lats)} detections ({rejected} rejected as oblique).")
+    logging.info("Localized %d detections (%d rejected as oblique)", len(lats), rejected)
 
     # cluster per-detection GPS into flags (in local metres)
     lat0 = np.mean(lats)
@@ -188,12 +247,16 @@ def main():
     with open(args.out, "w") as f:
         json.dump(results, f, indent=2)
 
-    print(f"\nFound {len(results)} flag(s):")
+    logging.info("Found %d flag(s):", len(results))
     for res in results:
-        print(f"  flag {res['flag_id']}: lat={res['lat']}, lon={res['lon']} "
-              f"({res['n_detections']} det, conf {res['mean_conf']})")
-    print(f"Wrote {args.out}")
+        logging.info("  flag %d: lat=%s lon=%s (%d det, conf %s)",
+                     res["flag_id"], res["lat"], res["lon"],
+                     res["n_detections"], res["mean_conf"])
+    logging.info("localize: DONE wrote %s", args.out)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        raise CustomException(e, sys) from e

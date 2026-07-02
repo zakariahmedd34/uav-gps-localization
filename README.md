@@ -52,19 +52,31 @@ pytest tests/ -v
 Main options: `--alt` = camera height above the target (AGL on a flight, not MSL);
 `--camera` = calibration YAML; `--heading` = fixed heading for stationary clips.
 
+## Competition context (ICMTC 2026 UAVC-9)
+
+- Targets are **2 m × 1 m flags lying flat on the ground** (no pole) → anchor = bbox centroid.
+- **Accuracy tolerance is 20 m** for full points (down to 60 m for partial) → aim for robust ≤20 m, not cm-precision.
+- **Flat desert airfield, 50–100 m AGL** → flat-ground assumption is valid; **no DEM needed**.
+- The aircraft has an **autopilot + GCS**; AGL/GPS/attitude come from the **flight log (control team)**. GoPro GPMF is backup.
+- Mission 1: locate **2 flags in the search area + 1 bonus flag** in the geofence.
+- **Submission = GPS coordinates + a cropped image per flag on a USB drive.**
+- See `documentation.md` §0.4 for the full addendum and the questions to ask the control team.
+
 ## Remaining work
 
-- Run `calibrate_camera.py` on the Hero 13; until then a placeholder lens is used and
-  distances are not accurate.
-- Provide a real above-ground altitude (the GoPro GPS altitude is MSL, not AGL).
+- ~~Run `calibrate_camera.py` on the Hero 13~~ **DONE** — real intrinsics in
+  `configs/camera_params_hero13.yaml` (Linear lens, 8×5 internal corners, RMS ~2.1 px;
+  fine for the 20 m tolerance). Pass `--camera configs/camera_params_hero13.yaml`.
+- Use **AGL from the autopilot flight log** with a flat-ground plane (keep `--alt` as a manual override).
+- Add the **two-stage detect→classify** step (crop the bbox → fine-grained flag-identity classifier).
+- Add the **USB submission export**: `targets.csv` (Flag_ID, identity, lat, lon) + `flags/` crop images.
 - Add validation against surveyed points (error, % within 20 m).
-- Add the USB submission export format.
 
 ## Known weaknesses
 
-- **Calibration YAML mismatch:** `calibrate_camera.py` writes `camera_matrix`/
-  `dist_coeffs`, but `localization.py` expects `K`/`dist` — reconcile before `--camera`
-  works.
+- ~~**Calibration YAML mismatch:**~~ FIXED — `localization.py` now reads the
+  `camera_matrix`/`dist_coeffs` schema that `calibrate_camera.py` writes (and still
+  accepts legacy `K`/`dist`). Run calibration and pass `--camera` directly.
 - **Heading** is the weakest input: needs a known azimuth (or course-over-ground on a
   moving flight); errors rotate the result.
 - **Needs a GPS fix:** no satellite lock means invalid coordinates (use `--fake-gps`

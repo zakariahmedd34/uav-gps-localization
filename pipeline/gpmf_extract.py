@@ -8,6 +8,7 @@ GoPro metadata track straight out of the original .MP4.
     pip install telemetrik --break-system-packages
 """
 
+import sys
 import subprocess
 import json
 import pandas as pd
@@ -16,6 +17,9 @@ from telemetrik.parser import get_boxes, get_samples, _from_bytes
 from os.path import getsize
 
 from gps9_parser import get_gps9_stream
+
+from logger import logging
+from exception import CustomException
 
 
 # ----------------------------------------------------------------------
@@ -37,8 +41,8 @@ def ffprobe_check(video_path):
     fps = eval(video_stream["r_frame_rate"])  # e.g. "29970/1000" -> 29.97
     resolution = (video_stream["width"], video_stream["height"])
 
-    print(f"[ffprobe] fps={fps:.3f} resolution={resolution} "
-          f"gpmd_track={'FOUND (stream ' + str(gpmd_stream['index']) + ')' if gpmd_stream else 'NOT FOUND'}")
+    logging.info("[ffprobe] fps=%.3f resolution=%s gpmd_track=%s", fps, resolution,
+                 f"FOUND (stream {gpmd_stream['index']})" if gpmd_stream else "NOT FOUND")
 
     if gpmd_stream is None:
         raise ValueError(
@@ -89,16 +93,17 @@ def _get_gpmd_samples_and_timebase(f, size):
 # Step 1: extract + align GPS5/GPS9 and GRAV into one dataframe
 # ----------------------------------------------------------------------
 def extract_video_to_csv(video_path, output_csv="telemetry.csv", check=True):
+    logging.info("gpmf_extract: START video=%s -> %s", video_path, output_csv)
     if check:
         # ffprobe is only an optional sanity print; telemetrik reads the GPMF
         # straight from the MP4. Don't let a missing ffprobe kill the run.
         try:
             ffprobe_check(video_path)
         except FileNotFoundError:
-            print("[ffprobe] not found on PATH — skipping sanity check "
-                  "(install ffmpeg for it). Continuing with telemetrik.")
+            logging.warning("[ffprobe] not found on PATH — skipping sanity check "
+                            "(install ffmpeg for it). Continuing with telemetrik.")
 
-    print("[1] Parsing GPMF via telemetrik...")
+    logging.info("[1] Parsing GPMF via telemetrik...")
 
     # Try GPS5 first (older cameras). Hero 11/12/13 don't record GPS5 at
     # all -- they switched to GPS9 -- so fall back to our own GPS9 decoder
@@ -110,14 +115,14 @@ def extract_video_to_csv(video_path, output_csv="telemetry.csv", check=True):
     grav_stream = streams["GRAV"]
 
     if "GPS5" in streams:
-        print("[1a] Using GPS5 stream.")
+        logging.info("[1a] Using GPS5 stream.")
         gps_stream = streams["GPS5"]
         gps_rows = [
             {"time_s": t, "lat": v[0], "lon": v[1], "alt": v[2]}
             for t, v in gps_stream.pts_data
         ]
     else:
-        print("[1a] No GPS5 found -- falling back to GPS9 (Hero 11/12/13).")
+        logging.info("[1a] No GPS5 found -- falling back to GPS9 (Hero 11/12/13).")
         with open(video_path, "rb") as f:
             samples, time_base = _get_gpmd_samples_and_timebase(f, getsize(video_path))
             gps9_data = get_gps9_stream(f, samples, time_base=time_base)
@@ -140,7 +145,7 @@ def extract_video_to_csv(video_path, output_csv="telemetry.csv", check=True):
     gps_df = pd.DataFrame(gps_rows).sort_values("time_s")
     grav_df = pd.DataFrame(grav_rows).sort_values("time_s")
 
-    print(f"[2] GPS samples: {len(gps_df)} | GRAV samples: {len(grav_df)}")
+    logging.info("[2] GPS samples: %d | GRAV samples: %d", len(gps_df), len(grav_df))
 
     # GRAV runs at a much higher rate than GPS (~200 Hz vs ~10-18 Hz), so we
     # snap each GPS row to its nearest GRAV reading in time.
@@ -151,18 +156,17 @@ def extract_video_to_csv(video_path, output_csv="telemetry.csv", check=True):
     df = df[["time_s", "lat", "lon", "alt", "grav_x", "grav_y", "grav_z"]]
 
     df.to_csv(output_csv, index=False)
-    print("[DONE] Saved:", output_csv)
-
-    print("\n--- First rows ---")
-    print(df.head())
-    print("\n--- Lat/Lon range ---")
-    print(f"lat: [{df['lat'].min()}, {df['lat'].max()}]")
-    print(f"lon: [{df['lon'].min()}, {df['lon'].max()}]")
-    print(f"alt (GoPro GPS, NOT AGL): [{df['alt'].min()}, {df['alt'].max()}]")
+    logging.info("[DONE] Saved: %s", output_csv)
+    logging.info("First rows:\n%s", df.head())
+    logging.info("lat range: [%s, %s]", df["lat"].min(), df["lat"].max())
+    logging.info("lon range: [%s, %s]", df["lon"].min(), df["lon"].max())
+    logging.info("alt (GoPro GPS, NOT AGL) range: [%s, %s]", df["alt"].min(), df["alt"].max())
 
     return df
 
 
 if __name__ == "__main__":
-    import sys
-    extract_video_to_csv(sys.argv[1])
+    try:
+        extract_video_to_csv(sys.argv[1])
+    except Exception as e:
+        raise CustomException(e, sys) from e

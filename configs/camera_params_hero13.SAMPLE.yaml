@@ -1,0 +1,25 @@
+# ============================================================================
+# SAMPLE / APPROXIMATE Hero 13 intrinsics — FOR TESTING THE LOADER ONLY.
+# These numbers are NOT a real calibration. They are rough values derived from
+# an assumed field of view at 4K, good enough to prove that localization.py
+# reads this file (Stage 1), NOT good enough for accurate metres.
+#
+# fx was estimated from:  fx = (width/2) / tan(HFOV/2)
+#   width = 3840 px, assumed horizontal FOV ~92 deg (GoPro "Wide"-ish at 16:9)
+#   -> fx ≈ 1854.  cx,cy = image centre.  distortion set to zero.
+#
+# Replace this with a REAL calibration (calibrate_camera.py on a checkerboard
+# filmed in your actual flight lens/resolution) before trusting distances.
+# This file uses the same schema calibrate_camera.py writes.
+# ============================================================================
+camera: hero13_SAMPLE_APPROX
+image_width: 3840
+image_height: 2160
+rms_reprojection_error_px: null      # not a real calibration
+camera_matrix:
+  fx: 1854.0
+  fy: 1854.0
+  cx: 1920.0
+  cy: 1080.0
+# OpenCV plumb-bob order: k1, k2, p1, p2, k3
+dist_coeffs: [0.0, 0.0, 0.0, 0.0, 0.0]

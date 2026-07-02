@@ -1,0 +1,20 @@
+camera: hero13
+image_width: 3840
+image_height: 2160
+rms_reprojection_error_px: 2.0975751706878074
+n_images_used: 45
+checkerboard_internal_corners:
+  rows: 5
+  cols: 8
+square_size_m: 0.02
+camera_matrix:
+  fx: 1703.4880638632947
+  fy: 1702.9383075319554
+  cx: 1958.6845945644127
+  cy: 1097.5930522198146
+dist_coeffs:
+- -0.018292640052946417
+- -0.005537586676920527
+- 0.001063318779250108
+- 0.0026233699869940073
+- 0.0016093958387662728

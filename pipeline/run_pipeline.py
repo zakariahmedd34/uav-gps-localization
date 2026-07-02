@@ -1,56 +1,80 @@
 """
-run_pipeline.py — end-to-end orchestrator.
+author: @Zakaria_34
 
-Runs the whole chain on one GoPro video and writes every intermediate to the
-artifacts/ directory, then prints the final flag coordinates:
+run_pipeline.py - run the whole flag-localization pipeline end to end
 
-    video.mp4
-      ├─[1] gpmf_extract.py  ->  artifacts/telemetry.csv
-      ├─[2] detect.py        ->  artifacts/detections.csv
-      ├─[3] sync.py          ->  artifacts/synced.csv
-      └─[4] localization.py  ->  artifacts/results.json
+video --> (1) gpmf_extract -output-> telemetry.csv
+          (2) detect       -output-> detection.csv
+          (3) sync         -output-> synced.csv
+          (4) localization -output-> results.csv    
 
-Each stage is still runnable on its own; this just connects them.
-
-Usage:
-    python pipeline/run_pipeline.py --video data/ground_truth/G1.MP4 --alt 80
-    python pipeline/run_pipeline.py --video data/ground_truth/G1.MP4 --alt 1.5 \
-        --heading 0 --sample-fps 5
+all stages log into ONE shared file under log/.
 """
-
+# setup tools
 import os
 import sys
 import subprocess
 import argparse
+import datetime
 
-HERE = os.path.dirname(os.path.abspath(__file__))      # .../pipeline
-ROOT = os.path.dirname(HERE)                            # repo root
+HERE = os.path.dirname(os.path.abspath(__file__)) # ./uav-gps-localization/pipeline
+ROOT = os.path.dirname(HERE) # project root folder ./uav-gps-localization
 PY = sys.executable
 
+#shared pipeline log
+LOGS_DIR = os.path.join(ROOT, "logs")
+os.makedirs(LOGS_DIR, exist_ok=True)
+os.environ["PIPELINE_LOG_FILE"] = os.path.join(
+    LOGS_DIR, datetime.datetime.now().strftime("%Y_%m_%d_%H_%M_%S") + ".log"
+)
 
-def run(cmd, cwd=None, label=""):
-    print(f"\n{'='*70}\n[{label}] {' '.join(str(c) for c in cmd)}\n{'='*70}")
-    r = subprocess.run([str(c) for c in cmd], cwd=cwd)
-    if r.returncode != 0:
-        sys.exit(f"\nPIPELINE STOPPED: stage '{label}' failed "
-                 f"(exit {r.returncode}). Fix it and re-run.")
+from logger import logging
+from exception import CustomException
+
+def run(cmd, cwd=ROOT, label=""):
+    cmd = [str(c) for c in cmd]
+    logging.info(f"[{label}] START: {" ".join(cmd)}")
+    try:
+        result = subprocess.run(cmd, cwd=cwd)
+    except Exception as e:
+        logging.error(f"[{label}] could not launch")
+        raise CustomException(e, sys) from e
+    if result.returncode != 0:
+        logging.error(f"[{label}] FAILED with returncode {result.returncode}")
+        sys.exit(f"Pipeline stopped:stage '{label}' failed.see thelig")  
+    logging.info(f"[{label}] DONE")
+
+def parse_args():
+    """
+            Terminal input
+                ↓
+            argparse
+                ↓
+            args object
+                ↓
+            pipeline uses args.*
+    """
+    ap = argparse.ArgumentParser(description="End-to-end flag localization pipeline")
+    ap.add_argument("--video", default=os.path.join(ROOT, "data/ground_truth/G1.MP4"),
+                    help="GoPro .mp4 to process")
+    ap.add_argument("--alt", type=float, required=True,
+                    help="Camera height above the flag (m). Flight = AGL; handheld test ~1.5")
+    ap.add_argument("--model", default=os.path.join(HERE, "weights/best.pt"),
+                    help="YOLO weights")
+    ap.add_argument("--camera", default=os.path.join(ROOT, "configs/camera_params_hero13.yaml"),
+                    help="Calibration yaml (K + dist)")
+    ap.add_argument("--heading", type=float, default=None,
+                    help="Fixed heading (deg) for stationary clips; omit on a real flight")
+    ap.add_argument("--sample-fps", type=float, default=3.0, help="Detections per second")
+    ap.add_argument("--start", default=None, help="Process FROM this time (HH:MM:SS or seconds)")
+    ap.add_argument("--end", default=None, help="Process UP TO this time (HH:MM:SS or seconds)")
+    ap.add_argument("--artifacts", default=os.path.join(ROOT, "artifacts"),
+                    help="Where all intermediate + output files go")
+    return ap.parse_args()
 
 
 def main():
-    ap = argparse.ArgumentParser(description="End-to-end flag localization pipeline")
-    ap.add_argument("--video", default=os.path.join(ROOT, "data/ground_truth/G1.MP4"),
-                    help="GoPro .mp4/.MP4 to process")
-    ap.add_argument("--alt", type=float, required=True,
-                    help="Camera height ABOVE the flag (m). Flight = AGL; handheld test ~1.5")
-    ap.add_argument("--model", default=os.path.join(HERE, "weights/best.pt"))
-    ap.add_argument("--camera", default=os.path.join(ROOT, "configs/camera_params_hero13.yaml"),
-                    help="Calibration yaml. Ignored (placeholder used) if empty/missing.")
-    ap.add_argument("--heading", type=float, default=None,
-                    help="Fixed heading (deg) for stationary clips; omit on a real flight (uses COG)")
-    ap.add_argument("--sample-fps", type=float, default=5.0)
-    ap.add_argument("--artifacts", default=os.path.join(ROOT, "artifacts"),
-                    help="Where all intermediate + output files go")
-    args = ap.parse_args()
+    args = parse_args()
 
     video = os.path.abspath(args.video)
     if not os.path.isfile(video):
@@ -59,44 +83,49 @@ def main():
     os.makedirs(art, exist_ok=True)
 
     telemetry = os.path.join(art, "telemetry.csv")
-    detections = os.path.join(art, "detections.csv")
+    detections = os.path.join(art, "detection.csv")
     synced = os.path.join(art, "synced.csv")
-    results = os.path.join(art, "results.json")
-    overlay = os.path.join(art, "overlay")
+    results = os.path.join(art, "results.csv")
+    overlay = os.path.join(art, "overlay.mp4")
 
-    print(f"Video:     {video}\nArtifacts: {art}")
+    logging.info(f"Pipeline start | video={video} | artifacts={art}")
 
-    # [1] telemetry — gpmf_extract.py writes telemetry.csv into its cwd
-    run([PY, os.path.join(HERE, "gpmf_extract.py"), video],
-        cwd=art, label="1/4 GPMF extract")
+    # video 
+    # --> (1) gpmf_extract -output-> telemetry.csv
+    run([PY,os.path.join(HERE, "gpmf_extract.py"), video],
+    cwd = art, label= "1/4 gpmf_extract")
+    
+    #(2) detect       -output->  detection.csv
 
-    # [2] detections
-    run([PY, os.path.join(HERE, "detect.py"),
-         "--model", args.model, "--source", video,
-         "--out", detections, "--sample-fps", args.sample_fps,
-         "--save-overlay", overlay],
-        label="2/4 YOLO detect")
+    detect_cmd = [PY, os.path.join(HERE, "detect.py"),
+                  "--model", args.model, "--source", video,
+                  "--out", detections, "--sample-fps", args.sample_fps,
+                  "--save-overlay", overlay]
+    
+    # optional time window
+    if args.start is not None:
+        detect_cmd += ["--start", args.start]
+    if args.end is not None:
+        detect_cmd += ["--end", args.end] 
+       
+    run(detect_cmd, label="2/4 detect")
 
-    # [3] sync
+    
+    #(3) sync         -output-> synced.csv
     sync_cmd = [PY, os.path.join(HERE, "sync.py"), detections, telemetry, synced]
     if args.heading is not None:
         sync_cmd += ["--heading", args.heading]
     run(sync_cmd, label="3/4 sync")
 
-    # [4] localize  (only pass --camera if the yaml has real content)
+    #(4) localization -output-> results.csv
     loc_cmd = [PY, os.path.join(HERE, "localization.py"), synced,
                "--alt", args.alt, "--out", results]
+    
     if os.path.isfile(args.camera) and os.path.getsize(args.camera) > 0:
         loc_cmd += ["--camera", args.camera]
     else:
-        print("NOTE: camera yaml empty/missing — localization uses PLACEHOLDER "
-              "intrinsics. Calibrate the Hero 13 for accurate metres.")
+        logging.warning("camera yaml missing/empty — localization uses PLACEHOLDER intrinsics")
     run(loc_cmd, label="4/4 localize")
-
-    print(f"\n{'='*70}\nDONE. Outputs in {art}/")
-    print(f"  telemetry.csv  detections.csv  synced.csv  results.json  overlay/")
-    print(f"{'='*70}")
-
 
 if __name__ == "__main__":
     main()

@@ -2,17 +2,17 @@
 Checkerboard camera calibration for the Hero 13.
 
     python calibrate_camera.py --images "path/to/checkerboard_photos/*.jpg" \
-                                --rows 6 --cols 9 --square-size 0.025 \
+                                --rows 5 --cols 8 --square-size 0.02 \
                                 --out configs/camera_params_hero13.yaml
 
---rows/--cols are INTERNAL corners (not squares). E.g. a 7x10-square board
-has 6x9 internal corners.
+--rows/--cols are INTERNAL corners (not squares). E.g. a 9x6-square board
+has 8x5 internal corners.
 --square-size is the real-world size of one checkerboard square, in
 meters (use whatever unit you like, just be consistent -- it only
 affects the scale of translation vectors, not the intrinsics/distortion
 you actually care about here).
 
-Usage notes for tomorrow's flight:
+Usage notes:
 - Shoot 15-25 photos of the checkerboard, filling different parts of the
   frame (corners and edges matter most -- that's where distortion is
   strongest), at a few different distances/angles. Keep the board flat
@@ -33,13 +33,16 @@ import cv2
 import numpy as np
 import yaml
 
+from logger import logging
+from exception import CustomException
+
 
 def calibrate(image_glob, rows, cols, square_size):
     image_paths = sorted(glob.glob(image_glob))
     if not image_paths:
         raise FileNotFoundError(f"No images matched: {image_glob}")
 
-    print(f"[1] Found {len(image_paths)} candidate images.")
+    logging.info("[1] Found %d candidate images.", len(image_paths))
 
     # 3D object points for one checkerboard view, in board coordinates
     # (z=0 plane), scaled by square_size.
@@ -57,7 +60,7 @@ def calibrate(image_glob, rows, cols, square_size):
     for path in image_paths:
         img = cv2.imread(path)
         if img is None:
-            print(f"    [skip] could not read: {path}")
+            logging.warning("    [skip] could not read: %s", path)
             skipped += 1
             continue
 
@@ -65,7 +68,7 @@ def calibrate(image_glob, rows, cols, square_size):
         if image_size is None:
             image_size = gray.shape[::-1]  # (width, height)
         elif gray.shape[::-1] != image_size:
-            print(f"    [skip] inconsistent resolution: {path}")
+            logging.warning("    [skip] inconsistent resolution: %s", path)
             skipped += 1
             continue
 
@@ -75,7 +78,7 @@ def calibrate(image_glob, rows, cols, square_size):
         )
 
         if not found:
-            print(f"    [skip] no checkerboard found: {path}")
+            logging.warning("    [skip] no checkerboard found: %s", path)
             skipped += 1
             continue
 
@@ -86,18 +89,16 @@ def calibrate(image_glob, rows, cols, square_size):
         imgpoints.append(corners_refined)
         used += 1
 
-    print(f"[2] Used {used} images, skipped {skipped}.")
+    logging.info("[2] Used %d images, skipped %d.", used, skipped)
 
     if used < 10:
-        print(
-            f"[WARNING] Only {used} usable images -- calibration may be unstable. "
-            "Aim for 15-25 well-distributed shots."
-        )
+        logging.warning("Only %d usable images -- calibration may be unstable. "
+                        "Aim for 15-25 well-distributed shots.", used)
 
     if used == 0:
         raise RuntimeError("No usable checkerboard detections -- cannot calibrate.")
 
-    print("[3] Running cv2.calibrateCamera...")
+    logging.info("[3] Running cv2.calibrateCamera...")
     rms, camera_matrix, dist_coeffs, rvecs, tvecs = cv2.calibrateCamera(
         objpoints, imgpoints, image_size, None, None
     )
@@ -138,7 +139,7 @@ def save_yaml(result, out_path, rows, cols, square_size, camera_label="hero13"):
     with open(out_path, "w") as f:
         yaml.safe_dump(data, f, sort_keys=False, default_flow_style=False)
 
-    print(f"[DONE] Saved: {out_path}")
+    logging.info("[DONE] Saved: %s", out_path)
     return data
 
 
@@ -150,21 +151,24 @@ def main():
     ap.add_argument("--square-size", type=float, required=True, help="Square size (meters)")
     ap.add_argument("--out", default="configs/camera_params_hero13.yaml")
     args = ap.parse_args()
+    logging.info("calibrate_camera: START images=%s rows=%d cols=%d",
+                 args.images, args.rows, args.cols)
 
     result = calibrate(args.images, args.rows, args.cols, args.square_size)
 
-    print(f"\n--- RMS reprojection error: {result['rms']:.4f} px ---")
+    logging.info("--- RMS reprojection error: %.4f px ---", result["rms"])
     if result["rms"] >= 1.0:
-        print(
-            "[WARNING] RMS >= 1.0 px target NOT met. Recommend retaking images "
-            "(more views, better corner/edge coverage, sharper focus, less "
-            "motion blur) and re-running before trusting these intrinsics."
-        )
+        logging.warning("RMS >= 1.0 px target NOT met. Recommend retaking images "
+                        "(more views, better corner/edge coverage, sharper focus, "
+                        "less motion blur) and re-running before trusting these intrinsics.")
     else:
-        print("[OK] RMS target met (< 1.0 px).")
+        logging.info("[OK] RMS target met (< 1.0 px).")
 
     save_yaml(result, args.out, args.rows, args.cols, args.square_size)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        raise CustomException(e, sys) from e

@@ -32,25 +32,47 @@ run_pipeline.py runs all four in order; outputs go to artifacts/.
 
 | File | Input | Output |
 |------|-------|--------|
-| `gpmf_extract.py` | GoPro `.MP4` | `telemetry.csv` (GPS + gravity); uses `gps9_parser.py` for Hero 13 |
+| `gpmf_extract.py` | GoPro `.MP4` | `telemetry.csv` (GPS gated by fix/dop, AGL anchored to a stationary window, GPS-UTC kept); uses `gps9_parser.py` for Hero 13 |
 | `detect.py` | video + YOLO weights | `detections.csv` (bbox centre + timestamp per detection) |
-| `sync.py` | detections + telemetry | `synced.csv` (drone position, heading, tilt per detection) |
-| `localization.py` | `synced.csv` | `results.json` (flag GPS coordinates) |
+| `sync.py` | detections + telemetry | `synced.csv` (drone position, heading, tilt, utc_s per detection) |
+| `localization.py` | `synced.csv` | `results.json` (off-nadir gate → DBSCAN → geometric median → top-K) |
 | `run_pipeline.py` | video | runs stages 1–4, writes everything to `artifacts/` |
 | `calibrate_camera.py` | checkerboard photos | camera intrinsics YAML |
-| `tests/test_geometry.py` | — | geometry unit tests |
+| `tests/test_geometry.py` | — | geometry + clustering unit tests |
+
+**See `doc/PIPELINE_V2.md`** for what changed after the first mission run, the
+test-day checklist, and the post-flight decision rules. Read it before flying.
 
 ## Install & run
 
 ```bash
 pip install -r requirements.txt
+# GPU (strongly recommended — CPU runs take 30+ min): install the CUDA torch build
+# per machine, then verify torch.cuda.is_available() is True:
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 
-python pipeline/run_pipeline.py --video data/ground_truth/G1.MP4 --alt 80
-pytest tests/ -v
+# competition run (top-3 flags, GPU):
+python pipeline/run_pipeline.py --video MISSION.MP4 --device 0 --top-k 3
+
+# testing (no cap; add --alt if the AGL anchor warning appears in the log):
+python pipeline/run_pipeline.py --video data/ground_truth/G2.MP4 --device 0 --top-k 0
+
+python tests/test_geometry.py   # or pytest tests/ -v
 ```
 
-Main options: `--alt` = camera height above the target (AGL on a flight, not MSL);
+Main options: `--alt` = constant camera height above target (overrides the AGL
+column); `--top-k` = max flags reported (0 = no cap); `--imgsz` = YOLO input size
+(default 1920 — don't reduce if recall matters); `--device 0` = GPU;
+`--start/--end` = process only a time window (big runtime saver);
 `--camera` = calibration YAML; `--heading` = fixed heading for stationary clips.
+
+**Iterating on localization only** (detect/sync already done — takes seconds):
+
+```bash
+python pipeline/localization.py artifacts/synced.csv \
+  --camera configs/camera_params_hero13.yaml \
+  --max-offnadir 30 --cluster-m 12 --top-k 0 --out artifacts/results.csv
+```
 
 ## Competition context (ICMTC 2026 UAVC-9)
 
@@ -64,24 +86,31 @@ Main options: `--alt` = camera height above the target (AGL on a flight, not MSL
 
 ## Remaining work
 
-- ~~Run `calibrate_camera.py` on the Hero 13~~ **DONE** — real intrinsics in
-  `configs/camera_params_hero13.yaml` (Linear lens, 8×5 internal corners, RMS ~2.1 px;
-  fine for the 20 m tolerance). Pass `--camera configs/camera_params_hero13.yaml`.
-- Use **AGL from the autopilot flight log** with a flat-ground plane (keep `--alt` as a manual override).
-- Add the **two-stage detect→classify** step (crop the bbox → fine-grained flag-identity classifier).
-- Add the **USB submission export**: `targets.csv` (Flag_ID, identity, lat, lon) + `flags/` crop images.
-- Add validation against surveyed points (error, % within 20 m).
+- ~~Calibrate the Hero 13~~ **DONE** — `configs/camera_params_hero13.yaml`
+  (**Linear lens** — the flight MUST use Linear or this yaml is invalid).
+- ~~USB submission export~~ **DONE** — `artifacts/submission/targets.csv` + `flags/` crops.
+- ~~GPS gating / AGL anchor / DBSCAN / top-K~~ **DONE** — see `doc/PIPELINE_V2.md`.
+- **Validate end-to-end against surveyed points** (error in metres, % within 20 m) —
+  still the biggest open item; no flight with ground truth exists yet.
+- Pixhawk hybrid (join `RelHomeAlt`/attitude by GPS-UTC — `utc_s` is already in
+  `synced.csv`) if the flight shows tilt/heading-dominated errors.
+- Two-stage detect→classify for flag identity (10 pts): current plan is a HUMAN reads
+  the 3 crops and types the country names — don't automate under time pressure.
 
 ## Known weaknesses
 
-- ~~**Calibration YAML mismatch:**~~ FIXED — `localization.py` now reads the
-  `camera_matrix`/`dist_coeffs` schema that `calibrate_camera.py` writes (and still
-  accepts legacy `K`/`dist`). Run calibration and pass `--camera` directly.
-- **Heading** is the weakest input: needs a known azimuth (or course-over-ground on a
-  moving flight); errors rotate the result.
-- **Needs a GPS fix:** no satellite lock means invalid coordinates (use `--fake-gps`
-  to test geometry).
-- **Altitude-sensitive:** error in `--alt` maps almost directly into ground error.
-- **Small targets:** a flag is ~20–40 px at altitude; detection must be verified there.
-- **Flat-ground assumption:** terrain relief is not modelled.
+- **Heading** is the weakest input (GPS course-over-ground ≠ true yaw in wind/crab).
+  Mitigated by the 30° off-nadir gate + straight overflight passes; NOT validated
+  against ground truth yet.
+- **Lens mode is a hard dependency:** the calibration is Linear-only. Wide footage
+  through this yaml gives radius-dependent errors up to tens of metres (the first
+  mission run proved it). Verify the camera setting before EVERY recording.
+- **Needs a GPS fix before recording starts:** the gate drops pre-lock samples, but
+  nothing can recover position for detections made while GPS was bad. Power on early,
+  wait for the lock icon, record 60 s stationary (that window is also the AGL anchor).
+- **Altitude:** `--alt` error maps ~1:1 into ground error at off-nadir angles (near
+  nadir it barely matters — another reason for the gate).
+- **Small targets:** a 2 m flag is ~6–10 px at YOLO's old 640 input — keep
+  `--imgsz 1920`; verify recall on the overlay frames after every run.
+- **Flat-ground assumption:** fine for the 6th October airfield (confirmed ~flat).
 ```

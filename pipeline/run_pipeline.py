@@ -57,8 +57,9 @@ def parse_args():
     ap = argparse.ArgumentParser(description="End-to-end flag localization pipeline")
     ap.add_argument("--video", default=os.path.join(ROOT, "data/ground_truth/G1.MP4"),
                     help="GoPro .mp4 to process")
-    ap.add_argument("--alt", type=float, required=True,
-                    help="Camera height above the flag (m). Flight = AGL; handheld test ~1.5")
+    ap.add_argument("--alt", type=float, default=None,
+                    help="Constant height above the flag (m). Omit to auto-use per-detection "
+                         "AGL from telemetry; pass a value (e.g. 1.5) for handheld clips.")
     ap.add_argument("--model", default=os.path.join(HERE, "weights/best.pt"),
                     help="YOLO weights")
     ap.add_argument("--camera", default=os.path.join(ROOT, "configs/camera_params_hero13.yaml"),
@@ -66,6 +67,16 @@ def parse_args():
     ap.add_argument("--heading", type=float, default=None,
                     help="Fixed heading (deg) for stationary clips; omit on a real flight")
     ap.add_argument("--sample-fps", type=float, default=3.0, help="Detections per second")
+    ap.add_argument("--top-k", type=int, default=3,
+                    help="Max flags to report (mission 1: 2 + 1 bonus = 3). "
+                         "Pass 0 to disable the cap.")
+    ap.add_argument("--max-offnadir", type=float, default=30.0,
+                    help="Reject rays more than this off vertical (deg)")
+    ap.add_argument("--imgsz", type=int, default=1920,
+                    help="YOLO inference size — small flags at 50-100 m AGL need "
+                         ">=1920 (640 shrinks a 2 m flag below detectability)")
+    ap.add_argument("--device", default=None,
+                    help="YOLO device: 0 for GPU, cpu for CPU (default: auto)")
     ap.add_argument("--start", default=None, help="Process FROM this time (HH:MM:SS or seconds)")
     ap.add_argument("--end", default=None, help="Process UP TO this time (HH:MM:SS or seconds)")
     ap.add_argument("--artifacts", default=os.path.join(ROOT, "artifacts"),
@@ -83,10 +94,12 @@ def main():
     os.makedirs(art, exist_ok=True)
 
     telemetry = os.path.join(art, "telemetry.csv")
-    detections = os.path.join(art, "detection.csv")
+    detections = os.path.join(art, "detections.csv")   # ONE canonical name
     synced = os.path.join(art, "synced.csv")
     results = os.path.join(art, "results.csv")
     overlay = os.path.join(art, "overlay.mp4")
+    crops = os.path.join(art, "crops")
+    submit = os.path.join(art, "submission")
 
     logging.info(f"Pipeline start | video={video} | artifacts={art}")
 
@@ -100,7 +113,10 @@ def main():
     detect_cmd = [PY, os.path.join(HERE, "detect.py"),
                   "--model", args.model, "--source", video,
                   "--out", detections, "--sample-fps", args.sample_fps,
-                  "--save-overlay", overlay]
+                  "--imgsz", args.imgsz,
+                  "--save-overlay", overlay, "--save-crops", crops]
+    if args.device is not None:
+        detect_cmd += ["--device", args.device]
     
     # optional time window
     if args.start is not None:
@@ -118,9 +134,14 @@ def main():
     run(sync_cmd, label="3/4 sync")
 
     #(4) localization -output-> results.csv
-    loc_cmd = [PY, os.path.join(HERE, "localization.py"), synced,
-               "--alt", args.alt, "--out", results]
-    
+    loc_cmd = [PY, os.path.join(HERE, "localization.py"), synced, "--out", results,
+               "--crops-dir", crops, "--submit", submit,
+               "--max-offnadir", args.max_offnadir]
+    if args.top_k and args.top_k > 0:
+        loc_cmd += ["--top-k", args.top_k]
+    if args.alt is not None:
+        loc_cmd += ["--alt", args.alt]
+
     if os.path.isfile(args.camera) and os.path.getsize(args.camera) > 0:
         loc_cmd += ["--camera", args.camera]
     else:

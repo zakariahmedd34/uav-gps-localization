@@ -106,6 +106,14 @@ def main():
     lat_uav = np.interp(ft, t, tel["lat"])
     lon_uav = np.interp(ft, t, tel["lon"])
     alt = np.interp(ft, t, tel["alt"])
+    # GPS-UTC passthrough (if gpmf_extract wrote it) — lets a Pixhawk .bin be
+    # joined later by UTC instead of a wing-rock time sync.
+    utc_s = (np.interp(ft, t, tel["utc_s"])
+             if "utc_s" in tel.columns and tel["utc_s"].notna().any() else None)
+    # AGL = alt above the ground (first telemetry sample). Prefer the column
+    # gpmf_extract wrote; else derive it here from alt minus the first alt.
+    agl_src = tel["agl"] if "agl" in tel.columns else (tel["alt"] - tel["alt"].iloc[0])
+    agl = np.interp(ft, t, agl_src)
     gx = np.interp(ft, t, tel["grav_x"])
     gy = np.interp(ft, t, tel["grav_y"])
     gz = np.interp(ft, t, tel["grav_z"])
@@ -151,10 +159,13 @@ def main():
     synced = pd.DataFrame({
         "frame_time": det["frame_time"], "u": det["u"], "v": det["v"],
         "conf": det["conf"], "class": det["class"],
-        "lat_uav": lat_uav, "lon_uav": lon_uav, "alt": alt,
+        "crop": det["crop"] if "crop" in det.columns else "",
+        "lat_uav": lat_uav, "lon_uav": lon_uav, "alt": alt, "agl": agl,
         "grav_x": gx, "grav_y": gy, "grav_z": gz,
         "heading_deg": heading, "tilt_deg": tilt_deg,
     })
+    if utc_s is not None:
+        synced["utc_s"] = utc_s
 
     # --- one-row bracket test ---
     if args.debug_row is not None:

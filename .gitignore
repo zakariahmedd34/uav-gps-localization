@@ -74,3 +74,10 @@ configs/secrets.yaml
 # Pipeline intermediate + output files
 artifacts/*
 !artifacts/.gitkeep
+
+# temp calibration frame dumps
+data/checkerboard/_*/
+# GoPro card dump
+data/ground_truth/DCIM/
+# log output folder
+logs/

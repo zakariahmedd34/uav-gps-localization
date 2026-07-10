@@ -1,0 +1,180 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 1560" font-family="Segoe UI, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#5b6472"/>
+    </marker>
+    <marker id="arrowDash" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#b07d2b"/>
+    </marker>
+    <style>
+      .title{font-size:30px;font-weight:700;fill:#1b2430}
+      .sub{font-size:15px;fill:#5b6472}
+      .box{rx:10;ry:10;stroke-width:1.5}
+      .lbl{font-size:15px;font-weight:600}
+      .small{font-size:12.5px}
+      .tiny{font-size:11.5px;fill:#48505c}
+      .edge{stroke:#5b6472;stroke-width:2;fill:none}
+      .edgeD{stroke:#b07d2b;stroke-width:2;fill:none;stroke-dasharray:6 5}
+      .elbl{font-size:11.5px;fill:#5b6472}
+      .grp{fill:none;stroke:#c3c9d2;stroke-width:1.5;stroke-dasharray:4 4;rx:14;ry:14}
+      .grplbl{font-size:13px;font-weight:700;fill:#8a929e;letter-spacing:1px}
+    </style>
+  </defs>
+
+  <rect width="1180" height="1560" fill="#fbfcfd"/>
+  <text x="40" y="48" class="title">UAV Flag Localization Pipeline — Competition Architecture</text>
+  <text x="40" y="74" class="sub">GoPro Hero 13 (video) + Pixhawk (state) · ray-cast geolocation · clustered single-flag output</text>
+
+  <!-- ===== Calibration group ===== -->
+  <rect class="grp" x="40" y="100" width="430" height="120"/>
+  <text x="58" y="124" class="grplbl">OFFLINE CALIBRATION (ONE-TIME)</text>
+  <rect class="box" x="58" y="138" width="185" height="66" fill="#eef3fb" stroke="#1f4e79"/>
+  <text x="150" y="162" text-anchor="middle" class="lbl" fill="#1f4e79">Intrinsics K + distortion</text>
+  <text x="150" y="182" text-anchor="middle" class="tiny">checkerboard · per lens/res</text>
+
+  <rect class="box" x="266" y="138" width="185" height="66" fill="#eef3fb" stroke="#1f4e79"/>
+  <text x="358" y="162" text-anchor="middle" class="lbl" fill="#1f4e79">Boresight R_body_cam</text>
+  <text x="358" y="182" text-anchor="middle" class="tiny">+ GPS lever arm</text>
+
+  <!-- ===== Sensors group ===== -->
+  <rect class="grp" x="510" y="100" width="630" height="120"/>
+  <text x="528" y="124" class="grplbl">ON-AIRCRAFT SENSORS (RIGID MOUNT)</text>
+  <rect class="box" x="528" y="138" width="270" height="66" fill="#e7f0ec" stroke="#2e6f40"/>
+  <text x="663" y="162" text-anchor="middle" class="lbl" fill="#2e6f40">GoPro Hero 13 — VIDEO only</text>
+  <text x="663" y="182" text-anchor="middle" class="tiny">HyperSmooth OFF · Horizon Lock OFF · Linear · 60fps</text>
+
+  <rect class="box" x="820" y="138" width="300" height="66" fill="#e7f0ec" stroke="#2e6f40"/>
+  <text x="970" y="162" text-anchor="middle" class="lbl" fill="#2e6f40">Pixhawk — EKF state</text>
+  <text x="970" y="182" text-anchor="middle" class="tiny">GPS · attitude · MSL alt · IMU @ high rate</text>
+
+  <!-- ===== Processing nodes ===== -->
+  <!-- column x anchors: left lane ~ 200 (video), right lane ~ 720 (telem) -->
+
+  <!-- [0] Ingest -->
+  <rect class="box" x="100" y="262" width="300" height="70" fill="#eef0f3" stroke="#3a3f4b"/>
+  <text x="250" y="290" text-anchor="middle" class="lbl" fill="#222">[0] Ingest / Seek</text>
+  <text x="250" y="312" text-anchor="middle" class="tiny">--start / --end window · frame stride</text>
+
+  <!-- [3] Telemetry normalize -->
+  <rect class="box" x="770" y="262" width="320" height="70" fill="#eef0f3" stroke="#3a3f4b"/>
+  <text x="930" y="290" text-anchor="middle" class="lbl" fill="#222">[3] Telemetry normalize</text>
+  <text x="930" y="312" text-anchor="middle" class="tiny">.ulog/.bin → Parquet (HAE &amp; MSL)</text>
+
+  <!-- [1] Detect -->
+  <rect class="box" x="100" y="358" width="300" height="64" fill="#eef0f3" stroke="#3a3f4b"/>
+  <text x="250" y="384" text-anchor="middle" class="lbl" fill="#222">[1] YOLO detect</text>
+  <text x="250" y="404" text-anchor="middle" class="tiny">bbox · class · conf · anchor px</text>
+
+  <!-- [2] Track -->
+  <rect class="box" x="100" y="448" width="300" height="64" fill="#eef0f3" stroke="#3a3f4b"/>
+  <text x="250" y="474" text-anchor="middle" class="lbl" fill="#222">[2] Track (ByteTrack)</text>
+  <text x="250" y="494" text-anchor="middle" class="tiny">track_id across frames</text>
+
+  <!-- [4] Time sync -->
+  <rect class="box" x="770" y="372" width="320" height="74" fill="#fbf2e3" stroke="#b07d2b"/>
+  <text x="930" y="398" text-anchor="middle" class="lbl" fill="#8a5a14">[4] Time sync</text>
+  <text x="930" y="418" text-anchor="middle" class="tiny">IMU cross-correlation (sub-frame)</text>
+  <text x="930" y="435" text-anchor="middle" class="tiny">t_utc = a·t_video + b</text>
+
+  <!-- [5] Pose interp -->
+  <rect class="box" x="770" y="468" width="320" height="64" fill="#eef0f3" stroke="#3a3f4b"/>
+  <text x="930" y="494" text-anchor="middle" class="lbl" fill="#222">[5] Pose interpolation</text>
+  <text x="930" y="514" text-anchor="middle" class="tiny">SLERP (attitude) + linear (position)</text>
+
+  <!-- [6] Ray build (center) -->
+  <rect class="box" x="430" y="572" width="320" height="74" fill="#eef0f3" stroke="#3a3f4b"/>
+  <text x="590" y="598" text-anchor="middle" class="lbl" fill="#222">[6] Ray build</text>
+  <text x="590" y="618" text-anchor="middle" class="tiny">d_cam = K⁻¹[u,v,1]ᵀ</text>
+  <text x="590" y="635" text-anchor="middle" class="tiny">R_world_cam = R_world_body · R_body_cam</text>
+
+  <!-- DEM side input -->
+  <rect class="box" x="800" y="600" width="290" height="64" fill="#f0ece6" stroke="#7a4f1d"/>
+  <text x="945" y="626" text-anchor="middle" class="lbl" fill="#7a4f1d">DEM + geoid model</text>
+  <text x="945" y="646" text-anchor="middle" class="tiny">Copernicus/SRTM · EGM2008 (N)</text>
+
+  <!-- [7] Ground intersection -->
+  <rect class="box" x="430" y="686" width="320" height="74" fill="#eef0f3" stroke="#3a3f4b"/>
+  <text x="590" y="712" text-anchor="middle" class="lbl" fill="#222">[7] Ground intersection</text>
+  <text x="590" y="732" text-anchor="middle" class="tiny">camera_MSL − DEM(target) · iterative</text>
+  <text x="590" y="749" text-anchor="middle" class="tiny">flat-plane fallback · geoid-corrected</text>
+
+  <!-- [8] Clustering -->
+  <rect class="box" x="430" y="800" width="320" height="68" fill="#eef0f3" stroke="#3a3f4b"/>
+  <text x="590" y="826" text-anchor="middle" class="lbl" fill="#222">[8] Data association</text>
+  <text x="590" y="847" text-anchor="middle" class="tiny">DBSCAN in ENU (eps≈3–5 m) → 1 cluster/flag</text>
+
+  <!-- [9] Fusion -->
+  <rect class="box" x="430" y="906" width="320" height="68" fill="#eef0f3" stroke="#3a3f4b"/>
+  <text x="590" y="932" text-anchor="middle" class="lbl" fill="#222">[9] Fusion + confidence</text>
+  <text x="590" y="953" text-anchor="middle" class="tiny">RANSAC reject · inverse-variance weighted mean</text>
+
+  <!-- Output -->
+  <rect class="box" x="410" y="1012" width="360" height="86" fill="#fbefe1" stroke="#7a4f1d" stroke-width="2"/>
+  <text x="590" y="1040" text-anchor="middle" class="lbl" fill="#7a4f1d" font-size="17">results.csv + results.geojson</text>
+  <text x="590" y="1063" text-anchor="middle" class="tiny">Flag_ID · class · lat/lon · CEP · confidence</text>
+  <text x="590" y="1081" text-anchor="middle" class="tiny">representative frame &amp; timestamp · detection_count</text>
+
+  <!-- ===== Edges ===== -->
+  <!-- sensors to first stages -->
+  <path class="edge" d="M663,204 L663,240 L250,240 L250,262" marker-end="url(#arrow)"/>
+  <text x="430" y="234" class="elbl">.mp4 + GPMF</text>
+  <path class="edge" d="M970,204 L970,240 L930,240 L930,262" marker-end="url(#arrow)"/>
+  <text x="978" y="234" class="elbl">.ulog/.bin</text>
+
+  <!-- video lane -->
+  <path class="edge" d="M250,332 L250,358" marker-end="url(#arrow)"/>
+  <path class="edge" d="M250,422 L250,448" marker-end="url(#arrow)"/>
+
+  <!-- GoPro gyro dashed to sync -->
+  <path class="edgeD" d="M798,171 L1118,171 L1118,360 L1095,360 L1095,400 L1092,400" marker-end="url(#arrowDash)"/>
+  <text x="1010" y="186" class="elbl" fill="#b07d2b">GPMF GYRO (sync)</text>
+
+  <!-- telem to sync and pose -->
+  <path class="edge" d="M930,332 L930,372" marker-end="url(#arrow)"/>
+  <path class="edge" d="M930,446 L930,468" marker-end="url(#arrow)"/>
+  <!-- telem normalize also feeds pose directly (curve on right) -->
+  <path class="edge" d="M1090,297 L1130,297 L1130,500 L1090,500" marker-end="url(#arrow)"/>
+
+  <!-- calibration into ray build -->
+  <path class="edge" d="M150,204 L150,609 L430,609" marker-end="url(#arrow)"/>
+  <text x="160" y="560" class="elbl">K, R_body_cam</text>
+
+  <!-- track to ray build -->
+  <path class="edge" d="M250,512 L250,609 L430,609" marker-end="url(#arrow)"/>
+  <!-- pose to ray build -->
+  <path class="edge" d="M930,532 L930,555 L750,555 L750,609 L750,609" marker-end="url(#arrow)"/>
+  <path class="edge" d="M770,555 L750,555" />
+
+  <!-- ray build to intersection -->
+  <path class="edge" d="M590,646 L590,686" marker-end="url(#arrow)"/>
+  <!-- DEM to intersection -->
+  <path class="edge" d="M800,668 L750,720" marker-end="url(#arrow)"/>
+  <path class="edge" d="M945,664 L945,720 L750,720" />
+
+  <!-- intersection to clustering to fusion to output -->
+  <path class="edge" d="M590,760 L590,800" marker-end="url(#arrow)"/>
+  <text x="600" y="785" class="elbl">per-detection lat/lon + cov</text>
+  <path class="edge" d="M590,868 L590,906" marker-end="url(#arrow)"/>
+  <path class="edge" d="M590,974 L590,1012" marker-end="url(#arrow)"/>
+
+  <!-- legend -->
+  <rect x="40" y="1140" width="1100" height="120" fill="#ffffff" stroke="#e1e5ea" rx="10"/>
+  <text x="60" y="1166" class="grplbl" fill="#5b6472">LEGEND</text>
+  <rect x="60" y="1180" width="22" height="16" fill="#e7f0ec" stroke="#2e6f40"/>
+  <text x="90" y="1193" class="small">Sensor (data source)</text>
+  <rect x="270" y="1180" width="22" height="16" fill="#eef3fb" stroke="#1f4e79"/>
+  <text x="300" y="1193" class="small">Calibration (one-time)</text>
+  <rect x="500" y="1180" width="22" height="16" fill="#eef0f3" stroke="#3a3f4b"/>
+  <text x="530" y="1193" class="small">Processing stage</text>
+  <rect x="700" y="1180" width="22" height="16" fill="#fbf2e3" stroke="#b07d2b"/>
+  <text x="730" y="1193" class="small">Time-sync / world data</text>
+  <rect x="930" y="1180" width="22" height="16" fill="#fbefe1" stroke="#7a4f1d"/>
+  <text x="960" y="1193" class="small">Final output</text>
+
+  <line x1="60" y1="1216" x2="100" y2="1216" class="edge"/>
+  <text x="110" y="1220" class="small">data flow</text>
+  <line x1="230" y1="1216" x2="270" y2="1216" class="edgeD"/>
+  <text x="280" y="1220" class="small">GoPro telemetry (backup / sync only)</text>
+  <text x="620" y="1220" class="small" fill="#8a5a14">Dominant error terms: attitude + boresight calibration, then altitude/DEM, then GPS.</text>
+  <text x="60" y="1244" class="small" fill="#5b6472">Key rule: HyperSmooth &amp; Horizon Lock OFF + Linear lens → preserves the rigid pinhole model the geolocation math depends on.</text>
+</svg>

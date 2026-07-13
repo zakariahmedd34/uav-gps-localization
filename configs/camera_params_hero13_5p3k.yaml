@@ -1,0 +1,19 @@
+# Hero 13 Linear calibration SCALED from 4K (3840x2160) to 5.3K (5312x2988).
+# Scale factor 5312/3840 = 1.383333 applied to fx, fy, cx, cy; distortion
+# coefficients unchanged (normalized model). Use for 5.3K test videos only —
+# competition recording should be 4K Linear to match the real calibration.
+camera: hero13
+image_width: 5312
+image_height: 2988
+rms_reprojection_error_px: 2.0975751706878074
+camera_matrix:
+  fx: 2356.4918
+  fy: 2355.7313
+  cx: 2709.5137
+  cy: 1518.3371
+dist_coeffs:
+- -0.018292640052946417
+- -0.005537586676920527
+- 0.001063318779250108
+- 0.0026233699869940073
+- 0.0016093958387662728

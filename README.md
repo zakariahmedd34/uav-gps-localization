@@ -63,8 +63,14 @@ python tests/test_geometry.py   # or pytest tests/ -v
 Main options: `--alt` = constant camera height above target (overrides the AGL
 column); `--top-k` = max flags reported (0 = no cap); `--imgsz` = YOLO input size
 (default 1920 — don't reduce if recall matters); `--device 0` = GPU;
+`--cluster-m` = merge radius (12 default; 16–18 for wide-lens footage);
 `--start/--end` = process only a time window (big runtime saver);
 `--camera` = calibration YAML; `--heading` = fixed heading for stationary clips.
+
+**Outputs per run:** `submission/targets.csv` + `flags/` = the OFFICIAL capped
+submission (judges see only this). `submission/candidates.csv` + `candidates_flags/`
+= EVERY candidate cluster with its crop, marked OFFICIAL / filtered_out — a human
+reviews it before hand-in and can promote a real flag the filters dropped.
 
 **Iterating on localization only** (detect/sync already done — takes seconds):
 

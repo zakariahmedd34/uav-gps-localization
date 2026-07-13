@@ -178,6 +178,41 @@ def geometric_median(P, iters=200, tol=1e-6):
     return x
 
 
+def build_tracklets(frame_time, u, v, max_gap_s=1.5, px_per_s=800.0):
+    """Assign a tracklet id to every detection by temporal + pixel continuity.
+
+    One physical flag seen during one pass = one tracklet, even when geometric
+    scatter (bad intrinsics, heading error) smears its ground points into a
+    neighbouring flag's. Two flags in the SAME frame always get different
+    tracklets (a track absorbs at most one detection per frame time).
+    """
+    n = len(frame_time)
+    order = np.argsort(frame_time, kind="stable")
+    tids = np.full(n, -1, dtype=int)
+    active = []          # [tid, last_t, last_u, last_v]
+    next_id = 0
+    for i in order:
+        t, uu, vv = float(frame_time[i]), float(u[i]), float(v[i])
+        best, best_d = None, None
+        for tr in active:
+            dt = t - tr[1]
+            if dt <= 1e-9 or dt > max_gap_s:
+                continue                      # same frame or too old
+            lim = px_per_s * dt + 50.0
+            dist = math.hypot(uu - tr[2], vv - tr[3])
+            if dist <= lim and (best_d is None or dist < best_d):
+                best, best_d = tr, dist
+        if best is None:
+            best = [next_id, t, uu, vv]
+            next_id += 1
+            active.append(best)
+        else:
+            best[1], best[2], best[3] = t, uu, vv
+        tids[i] = best[0]
+        active = [tr for tr in active if t - tr[1] <= max_gap_s]
+    return tids
+
+
 def R_grav_heading(grav, heading_deg):
     """Camera->world rotation: align gravity to world-down, then yaw by heading.
 
@@ -258,6 +293,10 @@ def main():
     ap.add_argument("--top-k", type=int, default=None,
                     help="Report at most this many flags, ranked by detection count "
                          "(mission 1: 2 flags + 1 bonus -> 3)")
+    ap.add_argument("--no-tracklets", action="store_true",
+                    help="Cluster raw points directly (old behaviour) instead of "
+                         "tracklet centres. Tracklets separate flags whose scattered "
+                         "ground points overlap (e.g. wide-lens footage).")
     ap.add_argument("--cx", type=float, default=1352.0, help="placeholder cx if no yaml")
     ap.add_argument("--cy", type=float, default=760.0, help="placeholder cy if no yaml")
     ap.add_argument("--crops-dir", default=None,
@@ -279,18 +318,34 @@ def main():
                  "per-detection AGL column" if use_agl_col else f"constant --alt={args.alt} m",
                  len(d))
 
-    # Sanity: intrinsics are tied to the pixel resolution. If detections clearly
-    # exceed the calibration image size, K is being used at the wrong scale.
-    if image_size and len(d):
+    # Intrinsics are tied to pixel resolution. If the video resolution is known
+    # (vid_w/vid_h from detect.py) and differs from the calibration, SCALE K.
+    # Distortion coefficients are kept (normalized model) — approximate but far
+    # better than using K at the wrong scale (G3 5.3K vs 4K calib: 38% error).
+    if image_size and len(d) and "vid_w" in d.columns:
+        sx = float(d.vid_w.iloc[0]) / image_size[0]
+        sy = float(d.vid_h.iloc[0]) / image_size[1]
+        if abs(sx - 1) > 0.02 or abs(sy - 1) > 0.02:
+            K[0, 0] *= sx; K[0, 2] *= sx
+            K[1, 1] *= sy; K[1, 2] *= sy
+            logging.warning("video is %.0fx%.0f but calibration is %dx%d -> scaled K "
+                            "by (%.4f, %.4f). OK for scale; still recalibrate at the "
+                            "flown resolution+lens for full accuracy.",
+                            d.vid_w.iloc[0], d.vid_h.iloc[0],
+                            image_size[0], image_size[1], sx, sy)
+    elif image_size and len(d):
         if d.u.max() > image_size[0] * 1.02 or d.v.max() > image_size[1] * 1.02:
             logging.warning("detection pixels reach (%.0f,%.0f) but calibration is %dx%d. "
                             "Re-calibrate at the SAME resolution/lens, or metres will be off.",
                             d.u.max(), d.v.max(), image_size[0], image_size[1])
 
+    all_tids = build_tracklets(d["frame_time"].to_numpy(),
+                               d["u"].to_numpy(), d["v"].to_numpy())
+
     lats, lons, confs, ENs = [], [], [], []
-    crops, ftimes, classes = [], [], []
+    crops, ftimes, classes, tks = [], [], [], []
     rej_oblique = rej_agl = rej_rot = 0
-    for _, r in d.iterrows():
+    for _i, (_, r) in enumerate(d.iterrows()):
         # 1-2: undistort -> normalized camera ray
         pt = np.array([[[float(r.u), float(r.v)]]], dtype=np.float64)
         xn, yn = cv2.undistortPoints(pt, K, dist)[0, 0]
@@ -331,6 +386,7 @@ def main():
         crops.append(r.crop if "crop" in d.columns else "")
         ftimes.append(float(r.frame_time))
         classes.append(r["class"])
+        tks.append(int(all_tids[_i]))
 
     if not lats:
         logging.error("no valid localizations: %d oblique, %d bad-AGL, %d bad-rotation "
@@ -352,14 +408,29 @@ def main():
         (np.array(lons) - lon0) * EARTH * math.cos(math.radians(lat0)),
         (np.array(lats) - lat0) * EARTH])
 
-    # DBSCAN (density-based, order-independent) instead of greedy first-point
-    # clustering; min_samples ties cluster support to --min-frames.
-    labels = dbscan(pts_m, eps=args.cluster_m,
-                    min_samples=max(3, min(args.min_frames, 5)))
-    n_noise = int((labels == -1).sum())
-    cluster_ids = [c for c in np.unique(labels) if c != -1]
-    logging.info("DBSCAN(eps=%.1f m): %d cluster(s), %d noise point(s) of %d",
-                 args.cluster_m, len(cluster_ids), n_noise, len(pts_m))
+    tks = np.array(tks)
+    if not args.no_tracklets:
+        # TRACKLET path: median each tracklet (one flag, one pass) to a single
+        # clean centre, then merge centres within eps. Separates flags whose
+        # raw point clouds overlap due to geometric scatter.
+        uniq = np.unique(tks)
+        centers = np.array([geometric_median(pts_m[tks == tid]) for tid in uniq])
+        c_labels = dbscan(centers, eps=args.cluster_m, min_samples=1)
+        tid_to_label = dict(zip(uniq, c_labels))
+        labels = np.array([tid_to_label[t] for t in tks])
+        cluster_ids = [c for c in np.unique(c_labels) if c != -1]
+        n_noise = int((labels == -1).sum())
+        logging.info("tracklets: %d tracklet(s) -> DBSCAN(eps=%.1f m) on centres: "
+                     "%d cluster(s) from %d point(s)",
+                     len(uniq), args.cluster_m, len(cluster_ids), len(pts_m))
+    else:
+        # RAW-POINT path (old behaviour): DBSCAN directly on per-detection points.
+        labels = dbscan(pts_m, eps=args.cluster_m,
+                        min_samples=max(3, min(args.min_frames, 5)))
+        n_noise = int((labels == -1).sum())
+        cluster_ids = [c for c in np.unique(labels) if c != -1]
+        logging.info("DBSCAN(eps=%.1f m): %d cluster(s), %d noise point(s) of %d",
+                     args.cluster_m, len(cluster_ids), n_noise, len(pts_m))
 
     results = []
     confs = np.array(confs)
@@ -367,15 +438,18 @@ def main():
     crops = np.array(crops, dtype=object)
     ftimes = np.array(ftimes)
     classes = np.array(classes, dtype=object)
-    clusters = [np.flatnonzero(labels == c) for c in cluster_ids]
-    clusters = [idx for idx in clusters if len(idx) >= args.min_frames]
-    clusters.sort(key=len, reverse=True)
+    all_clusters = [np.flatnonzero(labels == c) for c in cluster_ids]
+    all_clusters.sort(key=len, reverse=True)
+    clusters = [idx for idx in all_clusters if len(idx) >= args.min_frames]
 
+    if not args.top_k or args.top_k < 1:
+        args.top_k = None          # 0 / negative = no cap (matches run_pipeline)
     if args.top_k is not None and len(clusters) > args.top_k:
         logging.warning("capping output at top %d of %d clusters (by detection count) "
                         "— the dropped ones are likely scatter/duplicates",
                         args.top_k, len(clusters))
         clusters = clusters[:args.top_k]
+    official_ids = {id(idx) for idx in clusters}
 
     for k, idx in enumerate(clusters):
         # geometric median in local metres -> back to lat/lon (outlier-robust)
@@ -404,6 +478,40 @@ def main():
     # --- competition submission: targets.csv + flags/<crop> for the USB drive ---
     if args.submit:
         write_submission(results, args.submit, args.crops_dir)
+
+        # --- REVIEW FILE (not for judges): every candidate cluster, including
+        # ones below --min-frames or cut by --top-k, with its crop, so a human
+        # can promote a real flag the filters dropped. candidates.csv + candidates_flags/
+        cand_dir = os.path.join(args.submit, "candidates_flags")
+        os.makedirs(cand_dir, exist_ok=True)
+        cand_rows = []
+        for k, idx in enumerate(all_clusters):
+            mE, mN = geometric_median(pts_m[idx])
+            rep = int(idx[int(np.argmax(confs[idx]))])
+            cand_crop = ""
+            if args.crops_dir and str(crops[rep]):
+                src = os.path.join(args.crops_dir, str(crops[rep]))
+                if os.path.isfile(src):
+                    cand_crop = f"CAND_{k+1:02d}.jpg"
+                    shutil.copyfile(src, os.path.join(cand_dir, cand_crop))
+            cand_rows.append([
+                f"CAND_{k+1:02d}",
+                "OFFICIAL" if id(idx) in official_ids else "filtered_out",
+                round(float(lat0 + mN / EARTH), 7),
+                round(float(lon0 + mE / (EARTH * math.cos(math.radians(lat0)))), 7),
+                int(len(idx)),
+                round(float(confs[idx].mean()), 3),
+                round(float(ftimes[rep]), 3),
+                cand_crop,
+            ])
+        with open(os.path.join(args.submit, "candidates.csv"), "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["Candidate_ID", "Status", "Latitude", "Longitude",
+                        "Detection_Count", "Mean_Conf", "Rep_Frame_Time", "Crop"])
+            w.writerows(cand_rows)
+        logging.info("review file: %s/candidates.csv (%d candidates, %d official) "
+                     "+ crops in candidates_flags/ — HUMAN-REVIEW before handing in",
+                     args.submit, len(cand_rows), len(results))
 
     logging.info("localize: DONE wrote %s", args.out)
 

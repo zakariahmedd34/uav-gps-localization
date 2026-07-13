@@ -13,6 +13,7 @@ all stages log into ONE shared file under log/.
 # setup tools
 import os
 import sys
+import shutil
 import subprocess
 import argparse
 import datetime
@@ -77,6 +78,17 @@ def parse_args():
                          ">=1920 (640 shrinks a 2 m flag below detectability)")
     ap.add_argument("--device", default=None,
                     help="YOLO device: 0 for GPU, cpu for CPU (default: auto)")
+    ap.add_argument("--cluster-m", type=float, default=None,
+                    help="Cluster merge radius in metres (default 12; use 16-18 "
+                         "for wide-lens footage with extra scatter)")
+    ap.add_argument("--min-frames", type=int, default=None,
+                    help="Min detections per flag (localization default 5; lower to "
+                         "3 when using --sample-fps 1)")
+    ap.add_argument("--keep-artifacts", action="store_true",
+                    help="Do NOT delete crops/overlay/submission from previous runs")
+    ap.add_argument("--overlay", action="store_true",
+                    help="Also save up to 20 annotated overlay frames (debug aid; "
+                         "OFF by default to save time)")
     ap.add_argument("--start", default=None, help="Process FROM this time (HH:MM:SS or seconds)")
     ap.add_argument("--end", default=None, help="Process UP TO this time (HH:MM:SS or seconds)")
     ap.add_argument("--artifacts", default=os.path.join(ROOT, "artifacts"),
@@ -101,6 +113,21 @@ def main():
     crops = os.path.join(art, "crops")
     submit = os.path.join(art, "submission")
 
+    # Clean image outputs from previous runs — stale crops must never leak into
+    # a new submission (CSVs are overwritten by the stages anyway).
+    if not args.keep_artifacts:
+        removed = 0
+        for path in (crops, submit):
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+                removed += 1
+        if os.path.isfile(overlay):
+            os.remove(overlay)
+            removed += 1
+        if removed:
+            logging.info("cleaned %d old artifact path(s): crops/, submission/, overlay",
+                         removed)
+
     logging.info(f"Pipeline start | video={video} | artifacts={art}")
 
     # video 
@@ -114,7 +141,9 @@ def main():
                   "--model", args.model, "--source", video,
                   "--out", detections, "--sample-fps", args.sample_fps,
                   "--imgsz", args.imgsz,
-                  "--save-overlay", overlay, "--save-crops", crops]
+                  "--save-crops", crops]
+    if args.overlay:
+        detect_cmd += ["--save-overlay", overlay]
     if args.device is not None:
         detect_cmd += ["--device", args.device]
     
@@ -139,6 +168,10 @@ def main():
                "--max-offnadir", args.max_offnadir]
     if args.top_k and args.top_k > 0:
         loc_cmd += ["--top-k", args.top_k]
+    if args.cluster_m is not None:
+        loc_cmd += ["--cluster-m", args.cluster_m]
+    if args.min_frames is not None:
+        loc_cmd += ["--min-frames", args.min_frames]
     if args.alt is not None:
         loc_cmd += ["--alt", args.alt]
 

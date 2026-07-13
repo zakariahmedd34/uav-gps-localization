@@ -21,7 +21,25 @@ drops under-supported clutter.
 | 8 | **Top-K cap** | Unlimited rows in submission | `--top-k` keeps the K best-supported clusters (run_pipeline default: 3 = 2 flags + 1 bonus) | Mission 1 expects ~3 reported flags; a 60-row submission risks scoring zero | `localization.py`, wired in `run_pipeline.py` |
 | 9 | **Wiring** | `detection.csv` vs `detections.csv` footgun; detect ran at `imgsz=640` | One canonical `detections.csv`; `--imgsz` exposed, default 1920 | At 640, a 2 m flag at 60–100 m AGL is 6–10 px — below reliable YOLO size. At 1920 it is 3× larger | `run_pipeline.py` |
 
-**New CLI flags:** `gpmf_extract.py --min-fix --max-dop --max-speed` · `localization.py --max-offnadir --min-agl --max-agl --top-k` · `run_pipeline.py --top-k --max-offnadir --imgsz`.
+**New CLI flags:** `gpmf_extract.py --min-fix --max-dop --max-speed` · `localization.py --max-offnadir --min-agl --max-agl --top-k --no-tracklets` · `run_pipeline.py --top-k --max-offnadir --imgsz --device --cluster-m`.
+
+### V2.1 additions (post G3 5.3K/wide debugging)
+
+| # | Fix | Why | Where |
+|---|-----|-----|-------|
+| 10 | **Resolution auto-scale** — detect.py writes `vid_w/vid_h`; localization scales K when video ≠ calibration resolution | G3 was 5.3K against a 4K calibration → all ray angles 38 % wrong, 779/1475 detections falsely gated, flags merged | `detect.py`, `sync.py`, `localization.py` |
+| 11 | **Tracklets** — detections grouped by time + pixel continuity; clustering runs on tracklet centres (`--no-tracklets` = old behaviour) | Wide-lens scatter smears flags' ground points into each other; raw-point DBSCAN welded several flags into one 628-det mega-cluster no eps could split. Tracklet centres separate them (G3: 1 mega-flag → correct distinct flags) | `localization.py` |
+| 12 | **Two-file submission** — `submission/targets.csv` (official, capped) + `submission/candidates.csv` + `candidates_flags/` (EVERY cluster incl. filtered-out, with crops) | Human review in the 10-min window can promote a real flag the filters dropped; judges only ever see the clean file | `localization.py` |
+| 13 | **`--top-k 0` = no cap** everywhere (was "zero flags" when calling localization.py directly) | Footgun removed | `localization.py` |
+| 14 | **GPU + perf** — `--device` passthrough, `cap.grab()` frame-skip, `--imgsz` exposed; CUDA torch per machine | 34 min CPU → ~5 min GPU on a 6-min video | `detect.py`, `run_pipeline.py` |
+
+**Cluster radius guidance:** default `--cluster-m 12` for calibrated Linear footage;
+**16–18 for wide-lens test videos** (extra scatter duplicates flags across passes).
+Always review `candidates.csv` — over-split + human merge beats under-split.
+
+**Camera settings rule (extended):** the recording must match the calibration in
+**lens mode AND resolution** — 4K (3840×2160) Linear. The auto-scale is a safety net,
+not a licence to fly other settings.
 
 **Operational consequence of the 30° gate:** accepted swath ≈ `2·h·tan(30°)` ≈ **0.9 m of
 ground per metre of altitude to each side** (±40 m at 70 m AGL). Plan lawnmower pass

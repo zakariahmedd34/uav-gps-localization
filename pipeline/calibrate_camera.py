@@ -37,7 +37,7 @@ from logger import logging
 from exception import CustomException
 
 
-def calibrate(image_glob, rows, cols, square_size):
+def calibrate(image_glob, rows, cols, square_size, model="standard"):
     image_paths = sorted(glob.glob(image_glob))
     if not image_paths:
         raise FileNotFoundError(f"No images matched: {image_glob}")
@@ -98,9 +98,13 @@ def calibrate(image_glob, rows, cols, square_size):
     if used == 0:
         raise RuntimeError("No usable checkerboard detections -- cannot calibrate.")
 
-    logging.info("[3] Running cv2.calibrateCamera...")
+    logging.info("[3] Running cv2.calibrateCamera (model=%s)...", model)
+    # RATIONAL model (k1..k6, 8 coeffs) fits strong wide-angle distortion far
+    # better than the 5-coeff plumb-bob; cv2.undistortPoints accepts both, so
+    # localization.py needs no change.
+    flags = cv2.CALIB_RATIONAL_MODEL if model == "rational" else 0
     rms, camera_matrix, dist_coeffs, rvecs, tvecs = cv2.calibrateCamera(
-        objpoints, imgpoints, image_size, None, None
+        objpoints, imgpoints, image_size, None, None, flags=flags
     )
 
     return {
@@ -150,11 +154,15 @@ def main():
     ap.add_argument("--cols", type=int, required=True, help="Internal corner cols")
     ap.add_argument("--square-size", type=float, required=True, help="Square size (meters)")
     ap.add_argument("--out", default="configs/camera_params_hero13.yaml")
+    ap.add_argument("--model", choices=["standard", "rational"], default="standard",
+                    help="Distortion model: 'rational' (k1..k6) recommended for the "
+                         "WIDE lens; 'standard' (5 coeffs) is fine for Linear")
     args = ap.parse_args()
     logging.info("calibrate_camera: START images=%s rows=%d cols=%d",
                  args.images, args.rows, args.cols)
 
-    result = calibrate(args.images, args.rows, args.cols, args.square_size)
+    result = calibrate(args.images, args.rows, args.cols, args.square_size,
+                       model=args.model)
 
     logging.info("--- RMS reprojection error: %.4f px ---", result["rms"])
     if result["rms"] >= 1.0:

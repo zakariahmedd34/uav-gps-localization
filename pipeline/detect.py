@@ -114,7 +114,7 @@ def parse_args():
     p.add_argument("--source", required=True)
     p.add_argument("--out", default="detections.csv")
 
-    p.add_argument("--thresh", type=float, default=0.5) 
+    p.add_argument("--thresh", type=float, default=0.4) 
     p.add_argument("--sample-fps", type=float, default=10.0)
 
     p.add_argument("--fps", type=float, default=None)
@@ -156,7 +156,10 @@ def main():
 
 
     stride = max(1, int(round(fps / args.sample_fps)))
-    logging.info(f"video FPS={fps:.3f} | stride={stride} (~{fps/stride:.1f} detections/sec)")
+    vid_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    vid_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    logging.info(f"video FPS={fps:.3f} | {vid_w}x{vid_h} | stride={stride} "
+                 f"(~{fps/stride:.1f} detections/sec)")
 
 
     if args.save_overlay is not None:
@@ -188,81 +191,98 @@ def main():
     overlay_saved = 0
     crops_saved = 0
 
-    while True:
-        # PERF: only fully decode+retrieve frames we will run inference on.
-        # cap.grab() advances the stream without the expensive retrieve/convert
-        # of a 4K frame — big win when stride skips most frames on CPU.
-        process_this = anchored and (frame_idx % stride == 0)
-        if process_this:
+    def run_frame(frame, frame_idx, frame_time):
+        """Inference + crops/overlay/row logging for one sampled frame."""
+        nonlocal processed, overlay_saved, crops_saved
+        processed += 1
+        results = model(frame, conf=args.thresh, imgsz=args.imgsz,
+                        device=args.device, verbose=False)
+        boxes = results[0].boxes
+        clean = frame.copy() if args.save_crops else None
+        det_k = 0
+        for b in boxes:
+            conf = float(b.conf.item())
+            if conf < args.thresh:
+                continue
+            x1, y1, x2, y2 = b.xyxy[0].cpu().numpy().tolist()
+            u = (x1 + x2) / 2.0
+            v = (y1 + y2) / 2.0
+            cls = labels[int(b.cls.item())]
+            crop_name = ""
+            if args.save_crops:
+                crop_name = save_crop(clean, x1, y1, x2, y2,
+                                      args.save_crops, frame_idx, det_k, args.crop_pad)
+                det_k += 1
+                crops_saved += 1
+            rows.append([frame_idx, round(frame_time, 4),
+                         round(u, 2), round(v, 2), round(conf, 4), cls, crop_name,
+                         vid_w, vid_h])
+            if args.save_overlay and overlay_saved < 20:
+                cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)),
+                              (0, 255, 0), 2)
+                cv2.putText(frame, f"{cls} {conf:.2f}", (int(x1), int(y1) - 6),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        if args.save_overlay and overlay_saved < 20 and len(boxes):
+            cv2.imwrite(os.path.join(args.save_overlay,
+                                     f"frame_{frame_idx:06d}.jpg"), frame)
+            overlay_saved += 1
+
+    # PERF: with sparse sampling (stride >= 10) SEEK between sampled frames
+    # instead of decoding every frame. GoPro keyframes are ~1 s apart, so each
+    # seek decodes ~1 GOP instead of the whole stream (5.3K: ~4 min -> ~30 s).
+    if stride >= 10:
+        step = 1.0 / args.sample_fps
+        t = start_sec if (start_sec is not None and start_sec > 0) else 0.0
+        logging.info(f"seek mode ON (stride={stride}): sampling every {step:.2f}s by seeking")
+        last_idx = -1
+        while True:
+            if end_sec is not None and t > end_sec:
+                break
+            cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000.0)
             ret, frame = cap.read()
-        else:
-            ret = cap.grab()
-            frame = None
-        if not ret:
-            break
-        if not anchored:
+            if not ret:
+                break
             pos_ms = cap.get(cv2.CAP_PROP_POS_MSEC)
-            if pos_ms and pos_ms > 0:
-                frame_idx = int(round(pos_ms/1000.*fps))
-            anchored = True
-            if frame is None and frame_idx % stride == 0:
-                ret, frame = cap.retrieve()   # first frame after seek is processed
+            ftime = (pos_ms / 1000.0 - 1.0 / fps) if pos_ms and pos_ms > 0 else t
+            fidx = int(round(ftime * fps))
+            if fidx != last_idx:                     # avoid duplicate frame on seek clamp
+                run_frame(frame, fidx, ftime)
+                last_idx = fidx
+            t += step
+        frame_idx = last_idx + 1
+    else:
+        while True:
+            # decode-all path (dense sampling): grab() skips retrieve on unused frames
+            process_this = anchored and (frame_idx % stride == 0)
+            if process_this:
+                ret, frame = cap.read()
+            else:
+                ret = cap.grab()
+                frame = None
+            if not ret:
+                break
+            if not anchored:
+                pos_ms = cap.get(cv2.CAP_PROP_POS_MSEC)
+                if pos_ms and pos_ms > 0:
+                    frame_idx = int(round(pos_ms/1000.*fps))
+                anchored = True
+                if frame is None and frame_idx % stride == 0:
+                    ret, frame = cap.retrieve()   # first frame after seek is processed
 
-        frame_time = frame_idx / fps
-
-        if end_sec is not None and frame_time > end_sec:
-            logging.info(f"Reached end time: {frame_time:.2f}s > {end_sec:.2f}s")
-            break
-        if frame_idx % stride == 0 and frame is not None:
-            processed += 1
-
-            results = model(frame, conf=args.thresh, imgsz=args.imgsz,
-                            device=args.device, verbose=False)
-            boxes = results[0].boxes
-
-            clean = frame.copy() if args.save_crops else None
-            det_k = 0
-
-            for b in boxes:
-                conf = float(b.conf.item())
-                if conf < args.thresh:
-                    continue
-
-                x1, y1, x2, y2 = b.xyxy[0].cpu().numpy().tolist()
-
-                u = (x1 + x2) / 2.0
-                v = (y1 + y2) / 2.0
-
-                cls = labels[int(b.cls.item())]
-
-                crop_name = ""
-                if args.save_crops:
-                    crop_name = save_crop(clean, x1, y1, x2, y2,
-                                        args.save_crops, frame_idx, det_k, args.crop_pad)
-                    det_k += 1
-                    crops_saved += 1
-
-                rows.append([frame_idx, round(frame_time, 4),
-                            round(u, 2), round(v, 2), round(conf, 4), cls, crop_name])
-
-                if args.save_overlay and overlay_saved < 20:
-                                    cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)),
-                                                (0, 255, 0), 2)
-                                    cv2.putText(frame, f"{cls} {conf:.2f}", (int(x1), int(y1) - 6),
-                                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-
-            if args.save_overlay and overlay_saved < 20 and len(boxes):
-                cv2.imwrite(os.path.join(args.save_overlay,
-                                         f"frame_{frame_idx:06d}.jpg"), frame)
-                overlay_saved += 1
-
-        frame_idx += 1
+            frame_time = frame_idx / fps
+            if end_sec is not None and frame_time > end_sec:
+                logging.info(f"Reached end time: {frame_time:.2f}s > {end_sec:.2f}s")
+                break
+            if frame_idx % stride == 0 and frame is not None:
+                run_frame(frame, frame_idx, frame_time)
+            frame_idx += 1
 
     cap.release()
 
     with open(args.out, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["frame_idx", "frame_time", "u", "v", "conf", "class", "crop"])
+        w.writerow(["frame_idx", "frame_time", "u", "v", "conf", "class", "crop",
+                    "vid_w", "vid_h"])
         w.writerows(rows)
 
     logging.info(f"detect: DONE frames_read={frame_idx} processed={processed} detections={len(rows)} crops={crops_saved} -> {args.out}")

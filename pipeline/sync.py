@@ -166,6 +166,10 @@ def main():
     })
     if utc_s is not None:
         synced["utc_s"] = utc_s
+    # video resolution passthrough -> lets localization auto-scale K
+    for col in ("vid_w", "vid_h"):
+        if col in det.columns:
+            synced[col] = det[col]
 
     # --- one-row bracket test ---
     if args.debug_row is not None:

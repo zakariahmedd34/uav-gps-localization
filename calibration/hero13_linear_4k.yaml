@@ -1,3 +1,5 @@
+# GoPro Hero 13 Black, LINEAR lens, 4K (3840x2160). Checkerboard calibration.
+# Only valid for Linear; other resolutions are handled by scaling K in localize.py.
 camera: hero13
 image_width: 3840
 image_height: 2160

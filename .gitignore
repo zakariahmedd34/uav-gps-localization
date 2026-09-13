@@ -1,83 +1,30 @@
 # Python
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
-.Python
-
-# Virtual environments
 .venv/
 venv/
-env/
-ENV/
 
-# Jupyter
-.ipynb_checkpoints/
-*.ipynb_checkpoints
-
-# Distribution / packaging
-dist/
-build/
-*.egg-info/
-*.egg
-
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-*.log
-
-# IDEs
+# IDE / OS
 .vscode/
 .idea/
-*.swp
-*.swo
-
-# OS
 .DS_Store
 Thumbs.db
 desktop.ini
 
-# Large binary / media files (do not commit flight data)
+# Videos and GoPro card files (large)
 *.mp4
 *.MP4
-*.avi
 *.mov
 *.MOV
 *.lrv
 *.LRV
 *.thm
 *.THM
-*.bin
-*.tlog
-*.bag
-
-# GoPro flight/ground-truth data exports (keep the folder, not the big files)
-data/ground_truth/*.csv
-data/ground_truth/*.json
-
-# YOLO model weights (large)
-*.pt
-*.pth
-*.onnx
-
-# Calibration data images (large, keep only the output YAML)
-data/checkerboard/*.jpg
-data/checkerboard/*.png
-data/test_flight/
-
-# Secrets / credentials
-*.env
-.env
-configs/secrets.yaml
-
-# Pipeline intermediate + output files
-artifacts/*
-!artifacts/.gitkeep
-
-# temp calibration frame dumps
-data/checkerboard/_*/
-# GoPro card dump
 data/ground_truth/DCIM/
-# log output folder
+
+# YOLO weights (large) - place best.pt in models/
+*.pt
+
+# Run outputs
+artifacts/
 logs/

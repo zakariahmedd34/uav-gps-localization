@@ -1,122 +1,111 @@
 # UAV Flag Localization
 
-Find the GPS location of flags seen in GoPro aerial video, to within ~20 m, fully
-offline. Built for the ICMTC 2026 UAVC-9 Fixed-Wing Challenge.
+Finds the GPS coordinates of flags lying on the ground in GoPro Hero 13 aerial video,
+fully offline. Built for the ICMTC 2026 UAVC-9 Fixed-Wing Challenge (2 m x 1 m flags,
+20 m accuracy tolerance, 50-100 m AGL over flat ground).
 
-Only the GoPro Hero 13 video is needed. Its embedded GPMF metadata already holds GPS,
-a gravity vector (camera tilt), and gyro, all on the same clock as the video frames,
-so no separate flight-controller log or time syncing is required.
-
-## How it works
-
-For each frame with a detected flag: turn the pixel into a viewing ray, rotate it to
-the world using gravity (tilt) and heading, intersect the ground at the known height,
-then convert to GPS. A flag is seen in many frames, so the estimates are clustered and
-averaged into one coordinate.
+Everything comes from the video file: the GoPro stores GPS and a gravity vector
+(camera tilt) in its GPMF metadata track on the same clock as the frames, so no
+flight-controller log or time sync is needed.
 
 ## Pipeline
 
 ```
 GoPro .MP4
-   ├─ detect.py        → detections.csv   (frame_time, u, v, conf)
-   └─ gpmf_extract.py  → telemetry.csv    (time_s, lat, lon, alt, grav_x/y/z)
-                              │
-                          sync.py          → synced.csv   (join by time + heading + tilt)
-                              │
-                       localization.py     → results.json (one GPS per flag)
-
-run_pipeline.py runs all four in order; outputs go to artifacts/.
+  1. telemetry  read GPS9 + gravity from the video, drop bad GPS fixes and spikes,
+                AGL = altitude minus the ground altitude from a stationary window
+  2. detect     YOLO on 1 frame per second inside --start/--end, save a crop per detection
+  3. sync       interpolate position, AGL, gravity and heading (GPS course) to each detection
+  4. localize   pixel -> undistorted camera ray -> rotate by gravity + heading
+                -> reject rays > 30 deg off vertical -> intersect ground -> lat/lon
+                -> group detections into flags -> keep the top 3
 ```
 
-## Files
+## Requirements
 
-| File | Input | Output |
-|------|-------|--------|
-| `gpmf_extract.py` | GoPro `.MP4` | `telemetry.csv` (GPS gated by fix/dop, AGL anchored to a stationary window, GPS-UTC kept); uses `gps9_parser.py` for Hero 13 |
-| `detect.py` | video + YOLO weights | `detections.csv` (bbox centre + timestamp per detection) |
-| `sync.py` | detections + telemetry | `synced.csv` (drone position, heading, tilt, utc_s per detection) |
-| `localization.py` | `synced.csv` | `results.json` (off-nadir gate → DBSCAN → geometric median → top-K) |
-| `run_pipeline.py` | video | runs stages 1–4, writes everything to `artifacts/` |
-| `calibrate_camera.py` | checkerboard photos | camera intrinsics YAML |
-| `tests/test_geometry.py` | — | geometry + clustering unit tests |
+- Python 3.10+
+- An NVIDIA GPU is optional but strongly recommended (a full video on CPU takes 30+ min)
+- `models/best.pt`: the trained YOLO weights (not in git, copy it in)
 
-**See `doc/PIPELINE_V2.md`** for what changed after the first mission run, the
-test-day checklist, and the post-flight decision rules. Read it before flying.
-
-## Install & run
+## Installation
 
 ```bash
 pip install -r requirements.txt
-# GPU (strongly recommended — CPU runs take 30+ min): install the CUDA torch build
-# per machine, then verify torch.cuda.is_available() is True:
+
+# for --gpu: install the CUDA build of PyTorch, then check torch.cuda.is_available() is True
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
-
-# competition run (top-3 flags, GPU):
-python pipeline/run_pipeline.py --video MISSION.MP4 --device 0 --top-k 3
-
-# testing (no cap; add --alt if the AGL anchor warning appears in the log):
-python pipeline/run_pipeline.py --video data/ground_truth/G2.MP4 --device 0 --top-k 0
-
-python tests/test_geometry.py   # or pytest tests/ -v
 ```
 
-Main options: `--alt` = constant camera height above target (overrides the AGL
-column); `--top-k` = max flags reported (0 = no cap); `--imgsz` = YOLO input size
-(default 1920 — don't reduce if recall matters); `--device 0` = GPU;
-`--cluster-m` = merge radius (12 default; 16–18 for wide-lens footage);
-`--start/--end` = process only a time window (big runtime saver);
-`--camera` = calibration YAML; `--heading` = fixed heading for stationary clips.
+## Usage
 
-**Outputs per run:** `submission/targets.csv` + `flags/` = the OFFICIAL capped
-submission (judges see only this). `submission/candidates.csv` + `candidates_flags/`
-= EVERY candidate cluster with its crop, marked OFFICIAL / filtered_out — a human
-reviews it before hand-in and can promote a real flag the filters dropped.
-
-**Iterating on localization only** (detect/sync already done — takes seconds):
+Copy the video from the GoPro to a normal folder first. Python cannot open the
+`This PC\HERO13 Black\...` (MTP) path directly.
 
 ```bash
-python pipeline/localization.py artifacts/synced.csv \
-  --camera configs/camera_params_hero13.yaml \
-  --max-offnadir 30 --cluster-m 12 --top-k 0 --out artifacts/results.csv
+# CPU
+python main.py --video "path/to/GX014771.MP4"
+
+# GPU
+python main.py --video "path/to/GX014771.MP4" --gpu
+
+# only a section of the video (MM:SS, HH:MM:SS or seconds)
+python main.py --video "path/to/GX014771.MP4" --start 02:00 --end 05:30 --gpu
 ```
 
-## Competition context (ICMTC 2026 UAVC-9)
+**Optional tuning.** The defaults are the tested mission settings, so you can leave these out:
 
-- Targets are **2 m × 1 m flags lying flat on the ground** (no pole) → anchor = bbox centroid.
-- **Accuracy tolerance is 20 m** for full points (down to 60 m for partial) → aim for robust ≤20 m, not cm-precision.
-- **Flat desert airfield, 50–100 m AGL** → flat-ground assumption is valid; **no DEM needed**.
-- The aircraft has an **autopilot + GCS**; AGL/GPS/attitude come from the **flight log (control team)**. GoPro GPMF is backup.
-- Mission 1: locate **2 flags in the search area + 1 bonus flag** in the geofence.
-- **Submission = GPS coordinates + a cropped image per flag on a USB drive.**
-- See `documentation.md` §0.4 for the full addendum and the questions to ask the control team.
+| Flag | Default | What it changes |
+|------|---------|-----------------|
+| `--sample-fps` | 1 | Frames analysed per second of video. More gives more detections per flag but is slower. |
+| `--min-frames` | 3 | Detections a flag needs to be submitted. Raise it with `--sample-fps` (e.g. 3 fps -> 5). |
+| `--top-k` | 3 | Max flags submitted (mission: 2 + 1 bonus). `0` = no limit. |
+| `--imgsz` | 1280 | YOLO input size (the model's training size). Lower is faster but misses small flags. |
+| `--alt` | off | Fixed camera height above the ground (m). Only if the log warns the AGL anchor failed. |
 
-## Remaining work
-
-- ~~Calibrate the Hero 13~~ **DONE** — `configs/camera_params_hero13.yaml`
-  (**Linear lens** — the flight MUST use Linear or this yaml is invalid).
-- ~~USB submission export~~ **DONE** — `artifacts/submission/targets.csv` + `flags/` crops.
-- ~~GPS gating / AGL anchor / DBSCAN / top-K~~ **DONE** — see `doc/PIPELINE_V2.md`.
-- **Validate end-to-end against surveyed points** (error in metres, % within 20 m) —
-  still the biggest open item; no flight with ground truth exists yet.
-- Pixhawk hybrid (join `RelHomeAlt`/attitude by GPS-UTC — `utc_s` is already in
-  `synced.csv`) if the flight shows tilt/heading-dominated errors.
-- Two-stage detect→classify for flag identity (10 pts): current plan is a HUMAN reads
-  the 3 crops and types the country names — don't automate under time pressure.
-
-## Known weaknesses
-
-- **Heading** is the weakest input (GPS course-over-ground ≠ true yaw in wind/crab).
-  Mitigated by the 30° off-nadir gate + straight overflight passes; NOT validated
-  against ground truth yet.
-- **Lens mode is a hard dependency:** the calibration is Linear-only. Wide footage
-  through this yaml gives radius-dependent errors up to tens of metres (the first
-  mission run proved it). Verify the camera setting before EVERY recording.
-- **Needs a GPS fix before recording starts:** the gate drops pre-lock samples, but
-  nothing can recover position for detections made while GPS was bad. Power on early,
-  wait for the lock icon, record 60 s stationary (that window is also the AGL anchor).
-- **Altitude:** `--alt` error maps ~1:1 into ground error at off-nadir angles (near
-  nadir it barely matters — another reason for the gate).
-- **Small targets:** a 2 m flag is ~6–10 px at YOLO's old 640 input — keep
-  `--imgsz 1920`; verify recall on the overlay frames after every run.
-- **Flat-ground assumption:** fine for the 6th October airfield (confirmed ~flat).
+```bash
+# e.g. denser sampling on a short section
+python main.py --video "path/to/GX014771.MP4" --start 02:00 --end 03:00 --gpu --sample-fps 3 --min-frames 5
 ```
+
+**Outputs** (`artifacts/`):
+
+- `submission/targets.csv` + `submission/flags/`: the official result, one GPS point
+  and one crop per flag (what goes on the USB drive).
+- `submission/candidates.csv` + `submission/candidates_flags/`: every candidate,
+  marked OFFICIAL or filtered_out. Review it before submitting: a real flag may have
+  been filtered out.
+- `telemetry.csv`, `detections.csv`, `synced.csv`, `crops/`: intermediate data for debugging.
+- The run log is written to `logs/`.
+
+Tests: `python tests/test_geometry.py`
+
+## Project structure
+
+```
+main.py                         command-line entry point (runs the 4 steps)
+pipeline/
+  telemetry.py                  GPS9 + gravity extraction, GPS cleaning, AGL, sync
+  detect.py                     YOLO detection + crops
+  localize.py                   geometry, clustering, submission files
+calibration/hero13_linear_4k.yaml   camera intrinsics + distortion
+models/best.pt                  YOLO weights (not in git)
+tests/test_geometry.py          geometry and clustering tests
+data/                           ground-truth material and test videos (videos not in git)
+```
+
+Other fixed settings (confidence threshold, 30 deg off-nadir limit, 12 m clustering radius,
+GPS quality gates) are named constants at the top of each file in `pipeline/`.
+
+## Important assumptions
+
+- **Camera: GoPro Hero 13 Black, Linear lens, 4K.** The calibration is only valid for
+  Linear. Other resolutions are handled by scaling the calibration, but 4K Linear is
+  the most accurate. Wide/SuperView footage gives errors of tens of metres.
+- **GPS must be locked before recording starts.** Samples without a 3D fix are dropped.
+  Record about 60 s stationary on the ground at the start or end: that window is the
+  AGL reference.
+- **Flat ground** under the flags (no terrain model).
+- **Heading comes from GPS course-over-ground**, which is not the true yaw in crosswind.
+  The 30 deg off-nadir gate limits the effect. Fly straight passes over the area.
+- YOLO runs at 1280 px, the size the model was trained at. A 2 m flag is only a few
+  pixels at lower sizes.

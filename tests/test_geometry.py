@@ -1,10 +1,10 @@
 """
 Smoke tests for the localization geometry (no video/telemetry needed).
 
-Run:  pytest tests/ -v       (from the repo root)
+Run:  python tests/test_geometry.py       (from the repo root)
 
 These pin down the parts that are easy to get sign-flipped: the gravity->world
-rotation and the ground projection. If these pass, the math in localization.py
+rotation and the ground projection. If these pass, the math in localize.py
 is trustworthy and any bad output is an INPUT problem (calibration, h, heading).
 """
 
@@ -13,9 +13,9 @@ import sys
 import math
 import numpy as np
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "pipeline"))
-from localization import (R_grav_heading, EARTH, off_nadir_deg,   # noqa: E402
-                          dbscan, geometric_median)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from pipeline.localize import (R_grav_heading, EARTH, off_nadir_deg,   # noqa: E402
+                               dbscan, geometric_median)
 
 
 def project(grav, heading_deg, u, v, K, h, lat0=30.0, lon0=31.0):

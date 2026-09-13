@@ -1,18 +1,6 @@
-# Core
 numpy>=1.24
 opencv-python>=4.8
 pandas>=2.0
 pyyaml>=6.0
-
-# Detection
-ultralytics>=8.0          # YOLO (v8 / v11)
-
-# GoPro GPMF telemetry (Hero 13: GPS9 + GRAV, parsed locally from the .MP4)
-telemetrik
-
-# Testing
-pytest>=7.4
-
-# Optional — notebooks / plotting
-# jupyter>=1.0
-# matplotlib>=3.7
+ultralytics>=8.0     # YOLO (pulls in torch; install the CUDA build of torch for --gpu, see README)
+telemetrik           # reads the GoPro GPMF telemetry track from the .MP4

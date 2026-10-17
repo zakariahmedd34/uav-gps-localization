@@ -113,4 +113,3 @@ python pipeline/localization.py artifacts/synced.csv \
 - **Small targets:** a 2 m flag is ~6–10 px at YOLO's old 640 input — keep
   `--imgsz 1920`; verify recall on the overlay frames after every run.
 - **Flat-ground assumption:** fine for the 6th October airfield (confirmed ~flat).
-```
